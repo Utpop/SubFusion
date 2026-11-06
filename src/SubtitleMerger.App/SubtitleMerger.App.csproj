@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    WinUI 3 桌面应用（未打包 / unpackaged）。
+    WindowsPackageType=None + WindowsAppSDKSelfContained=true：
+    无需 MSIX 安装、无需目标机预装 Windows App SDK 运行时，直接双击 exe 即可运行。
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>SubtitleMerger.App</RootNamespace>
+    <AssemblyName>SubtitleMerger</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12.0</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DefaultLanguage>zh-CN</DefaultLanguage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SubtitleMerger.Core\SubtitleMerger.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 沿用原程序的图标资源；AppWindow.SetIcon 直接读取输出目录下的该文件 -->
+    <Content Include="..\..\app.ico" Link="Assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!--
+    WinUI 3 的 XAML 编译产物（.xbf）与资源索引（.pri）默认只进入 build 输出，
+    dotnet publish 不会自动带上，导致发布目录里的 exe 因资源缺失而启动失败。
+    这里显式把它们加入发布文件清单（路径与 build 输出保持一致）。
+  -->
+  <Target Name="IncludeXamlArtifactsInPublish" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(TargetDir)App.xbf"
+                             RelativePath="App.xbf" CopyToPublishDirectory="PreserveNewest" />
+      <ResolvedFileToPublish Include="$(TargetDir)Views\MainWindow.xbf"
+                             RelativePath="Views\MainWindow.xbf" CopyToPublishDirectory="PreserveNewest" />
+      <ResolvedFileToPublish Include="$(TargetDir)Views\SubtitleTrackDialog.xbf"
+                             RelativePath="Views\SubtitleTrackDialog.xbf" CopyToPublishDirectory="PreserveNewest" />
+      <ResolvedFileToPublish Include="$(TargetDir)SubtitleMerger.pri"
+                             RelativePath="SubtitleMerger.pri" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
+
+</Project>

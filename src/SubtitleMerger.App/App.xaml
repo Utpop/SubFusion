@@ -1,0 +1,16 @@
+<Application
+    x:Class="SubtitleMerger.App.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:converters="using:SubtitleMerger.App.Services">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- WinUI 3 原生 Fluent 2 控件样式（替代原 fluent.py + sv-ttk 主题） -->
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+            <converters:StateToBrushConverter x:Key="StateToBrush" />
+            <converters:HexToBrushConverter x:Key="HexToBrush" />
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
