@@ -1,0 +1,150 @@
+using System.Runtime.InteropServices;
+using System.Text;
+using SubtitleMerger.Core;
+
+namespace SubtitleMerger.App.Services;
+
+/// <summary>
+/// 崩溃兜底：把未处理异常写进 %TEMP%\subtitle_merger_crash.txt，并在条件允许时弹窗，
+/// 而不是让进程「直接消失」。
+///
+/// 覆盖三类：
+/// 1. UI 线程上的托管异常（WinUI 的 Application.UnhandledException）；
+/// 2. 后台任务里逃逸的托管异常（TaskScheduler.UnobservedTaskException）；
+/// 3. 非 UI 线程上的托管异常（AppDomain.UnhandledException）；
+/// 4. 非托管异常（SERH，例如越界访问、OOM 分配失败）—— 记录后让进程正常结束。
+/// </summary>
+internal static class CrashGuard
+{
+    private const string FileName = "subtitle_merger_crash.txt";
+    private static readonly object Gate = new();
+    private static bool _installed;
+
+    public static string LogPath => Path.Combine(Path.GetTempPath(), FileName);
+
+    public static void Install()
+    {
+        if (_installed) return;
+        _installed = true;
+
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => Write("AppDomain", e.ExceptionObject as Exception);
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            e.SetObserved();
+            Write("UnobservedTask", e.Exception);
+        };
+
+        try
+        {
+            SetUnhandledExceptionFilter(OnSerh);
+        }
+        catch { /* 部分受限环境不允许安装过滤器，忽略 */ }
+    }
+
+    /// <summary>WinUI 没有恢复路径时调用：记录并提示用户日志位置。</summary>
+    public static void ReportUnhandledAndExit(Exception ex, string origin)
+    {
+        Write(origin, ex);
+        try
+        {
+            ShowFatalBox(ex, origin);
+        }
+        catch { /* 弹窗失败也要退出 */ }
+        Environment.Exit(2);
+    }
+
+    public static void Write(string origin, Exception? ex)
+    {
+        lock (Gate)
+        {
+            try
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine("time   : " + DateTime.Now.ToString("O"));
+                sb.AppendLine("origin : " + origin);
+                sb.AppendLine("version: " + typeof(CrashGuard).Assembly.GetName().Version);
+                sb.AppendLine("proc   : " + Environment.ProcessPath);
+                using (var p = System.Diagnostics.Process.GetCurrentProcess())
+                    sb.AppendLine($"memory : ws={p.WorkingSet64 / 1048576}MB private={p.PrivateMemorySize64 / 1048576}MB threads={p.Threads.Count}");
+                if (ex is not null) sb.AppendLine(ex.ToString());
+                else sb.AppendLine("(no managed exception object)");
+                sb.AppendLine(new string('-', 60));
+                File.AppendAllText(LogPath, sb.ToString(), Encoding.UTF8);
+            }
+            catch { /* 记录失败不能引发二次崩溃 */ }
+        }
+    }
+
+    private static IntPtr OnSerh(IntPtr exceptionPointers)
+    {
+        try
+        {
+            Write("SEH", ExceptionFromPointers(exceptionPointers));
+        }
+        catch { /* 忽略 */ }
+        return IntPtr.Zero;   // 继续默认处理：让 WER/进程收尾流程正常进行
+    }
+
+    private static Exception ExceptionFromPointers(IntPtr pointers)
+    {
+        if (pointers == IntPtr.Zero) return new Exception("未知的非托管异常");
+        var er = Marshal.PtrToStructure<ExceptionRecord>(pointers);
+        return new Exception($"非托管异常 0x{er.Code:X8} at 0x{er.Address.ToInt64():X} " +
+                             $"{DescribeSeverity(er.Code)}");
+    }
+
+    private static string DescribeSeverity(uint code) => code switch
+    {
+        0xC0000005 => "(访问冲突：越界读写 / 空指针)",
+        0xC00000FD => "(栈溢出：通常是无限递归)",
+        0xE0000001 => "(内存分配失败：进程内存或 GDI/USER 句柄耗尽)",
+        0xC0000409 => "(栈缓冲区溢出 / 检测到程序被篡改)",
+        _ => "",
+    };
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ExceptionRecord
+    {
+        public uint Code;
+        public uint Flags;
+        public IntPtr Record;
+        public IntPtr Address;
+        public uint NumberParameters;
+        public IntPtr Pad;
+        public IntPtr Info0;
+        public IntPtr Info1;
+        public IntPtr Info2;
+        public IntPtr Info3;
+        public IntPtr Info4;
+        public IntPtr Info5;
+        public IntPtr Info6;
+        public IntPtr Info7;
+        public IntPtr Info8;
+        public IntPtr Info9;
+        public IntPtr Info10;
+        public IntPtr Info11;
+        public IntPtr Info12;
+        public IntPtr Info13;
+        public IntPtr Info14;
+    }
+
+    private delegate IntPtr ExceptionFilter(IntPtr exceptionPointers);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr SetUnhandledExceptionFilter(ExceptionFilter filter);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
+
+    private static void ShowFatalBox(Exception ex, string origin)
+    {
+        _ = MessageBoxW(IntPtr.Zero,
+            $"{Constants.AppName} 遇到未处理的错误，已记录到：\n{LogPath}\n\n" +
+            $"类型：{ex.GetType().Name}\n{Truncate(ex.Message, 400)}",
+            Constants.AppName + " —— 错误",
+            0x00000010 /* MB_ICONERROR */);
+    }
+
+    private static string Truncate(string text, int max)
+        => string.IsNullOrEmpty(text) ? "" : (text.Length > max ? text[..max] + "…" : text);
+}

@@ -106,7 +106,7 @@ public static class FfmpegRunner
             // 避免 ffmpeg 长时间无输出时「停止」按钮卡住。
             using CancellationTokenRegistration stopRegistration = cancelToken.Register(() =>
             {
-                try { process.Kill(entireProcessTree: false); } catch { /* 已退出 */ }
+                try { process.Kill(entireProcessTree: true); } catch { /* 已退出 */ }
             });
 
             var state = new ProgressState();
@@ -119,7 +119,7 @@ public static class FfmpegRunner
                 {
                     if (cancelToken.IsCancellationRequested)
                     {
-                        try { process.Kill(entireProcessTree: false); } catch { /* 忽略 */ }
+                        try { process.Kill(entireProcessTree: true); } catch { /* 忽略 */ }
                         break;
                     }
                     state.Feed(line);
@@ -134,21 +134,26 @@ public static class FfmpegRunner
             }
             catch
             {
-                try { process.Kill(entireProcessTree: false); } catch { /* 忽略 */ }
+                try { process.Kill(entireProcessTree: true); } catch { /* 忽略 */ }
                 try { await process.WaitForExitAsync().ConfigureAwait(false); } catch { /* 忽略 */ }
             }
             finally
             {
-                try { process.StandardOutput.Close(); } catch { /* 忽略 */ }
                 stopRegistration.Unregister();
+                // 先等在途读取收尾再关流：ffmpeg 被强杀时 stderr 读取任务可能仍在阻塞，
+                // 直接 Close 会让它抛异常而留下未观察的 Task，重负载下不断累积。
+                try { process.StandardOutput.Close(); } catch { /* 忽略 */ }
                 await Task.WhenAny(reader, Task.Delay(5000)).ConfigureAwait(false);  // reader.join(timeout=5)
+                _ = reader.ContinueWith(static t => _ = t.Exception, TaskScheduler.Default);
             }
 
             List<string> snapshot;
             lock (gate) snapshot = stderrLines.ToList();
             logLines?.AddRange(snapshot);
             string errorText = string.Join("\n", snapshot.TakeLast(8)).Trim();
-            return (process.ExitCode, errorText);
+            int exitCode;
+            try { exitCode = process.ExitCode; } catch { exitCode = -1; }
+            return (exitCode, errorText);
         }
     }
 }

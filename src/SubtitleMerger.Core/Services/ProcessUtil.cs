@@ -70,28 +70,51 @@ public static class ProcessUtil
                 Task winner = await Task.WhenAny(waitTask, timeoutTask).ConfigureAwait(false);
                 if (winner == timeoutTask)
                 {
-                    try { process.Kill(entireProcessTree: true); } catch { /* 忽略 */ }
-                    await Task.WhenAny(waitTask, Task.Delay(2000)).ConfigureAwait(false);
+                    KillTree(process);
+                    await SettleAsync(waitTask, stdoutTask, stderrTask).ConfigureAwait(false);
                     return new ProcessCapture(-1, "", "", true);
                 }
                 await waitTask.ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
-                try { process.Kill(entireProcessTree: true); } catch { /* 忽略 */ }
+                KillTree(process);
+                await SettleAsync(null, stdoutTask, stderrTask).ConfigureAwait(false);
                 return new ProcessCapture(-1, "", "", true);
             }
             catch (Exception ex)
             {
-                try { process.Kill(entireProcessTree: true); } catch { /* 忽略 */ }
+                KillTree(process);
+                await SettleAsync(null, stdoutTask, stderrTask).ConfigureAwait(false);
                 return new ProcessCapture(-1, "", ex.Message, false);
             }
 
             string stdout, stderr;
             try { stdout = await stdoutTask.ConfigureAwait(false); } catch { stdout = ""; }
             try { stderr = await stderrTask.ConfigureAwait(false); } catch { stderr = ""; }
-            return new ProcessCapture(process.ExitCode, stdout, stderr, false);
+            int code;
+            try { code = process.ExitCode; } catch { code = -1; }
+            return new ProcessCapture(code, stdout, stderr, false);
         }
+    }
+
+    /// <summary>
+    /// 结束整个进程树。ffprobe/ffmpeg 被超时或取消打断时必须连子进程一起终止，
+    /// 否则子进程仍握着 stdout/stderr 管道，读取任务永远完不成、句柄也不会释放。
+    /// </summary>
+    private static void KillTree(Process process)
+    {
+        try { process.Kill(entireProcessTree: true); } catch { /* 已退出 */ }
+    }
+
+    /// <summary>收尾：等进程退出与两条输出流读取结束，各最多等 2 秒，保证句柄释放。</summary>
+    private static async Task SettleAsync(Task? waitTask, Task stdoutTask, Task stderrTask)
+    {
+        Task all = Task.WhenAll(
+            waitTask ?? Task.CompletedTask,
+            stdoutTask.ContinueWith(static t => _ = t.Exception, TaskScheduler.Default),
+            stderrTask.ContinueWith(static t => _ = t.Exception, TaskScheduler.Default));
+        await Task.WhenAny(all, Task.Delay(2000)).ConfigureAwait(false);
     }
 
     /// <summary>

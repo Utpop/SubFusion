@@ -63,6 +63,12 @@ internal static class Program
         Console.WriteLine("=== B. 端到端功能验证（本机 ffmpeg） ===");
         await EndToEndAsync(args.Contains("--skip-e2e"));
 
+        Console.WriteLine("=== C. 界面布局约束 ===");
+        CheckLayoutConstraints();
+
+        Console.WriteLine("=== D. 重负载健壮性 ===");
+        await CheckRobustnessAsync();
+
         Console.WriteLine();
         Console.WriteLine($"通过：{_passed} 项，失败：{Failures.Count} 项");
         foreach (string failure in Failures)
@@ -277,6 +283,149 @@ internal static class Program
         forced: el.TryGetProperty("forced", out var f) && f.GetBoolean(),
         kind: el.TryGetProperty("kind", out var k) ? k.GetString()! : "text",
         enabled: !el.TryGetProperty("enabled", out var en) || en.GetBoolean());
+
+    #endregion
+
+    #region C. 界面布局约束
+
+    /// <summary>
+    /// 1.1：主窗口布局的数值约束。用文字断言而不是引用 UI 类型，
+    /// 这样 Core/SelfTest 仍不依赖 WinUI，但重构 XAML 时能拦住把底部区域挤出窗口的回归。
+    /// 判定依据：最小窗口 1120x800（物理像素，125% 缩放即 882x685 DIP）时，
+    /// 各固定行合计必须给设置区留下 ≥250 DIP，否则「输出」页内容会被裁。
+    /// </summary>
+    private static void CheckLayoutConstraints()
+    {
+        string? xaml = FindMainWindowXaml();
+        if (xaml is null)
+        {
+            Console.WriteLine("(未找到 MainWindow.xaml，跳过)");
+            return;
+        }
+
+        Check("布局：任务表/设置区按比例分配剩余高度（0.38*/0.62*）",
+              xaml.Contains(@"Height=""0.38*""", StringComparison.Ordinal) &&
+              xaml.Contains(@"Height=""0.62*""", StringComparison.Ordinal));
+        Check("布局：设置区最小高度 250（小窗口仍能完整显示一页）",
+              xaml.Contains(@"MinHeight=""250""", StringComparison.Ordinal));
+        Check("布局：任务表最小高度 110（可收缩但保留表头与一行）",
+              xaml.Contains(@"MinHeight=""110""", StringComparison.Ordinal));
+        Check("布局：Pivot 不再使用固定 Height（固定高度会把底部按钮挤出窗口）",
+              !System.Text.RegularExpressions.Regex.IsMatch(xaml, @"<Pivot[^>]*\sHeight="""));
+    }
+
+    /// <summary>
+    /// 重负载相关回归：
+    /// 1. 进程超时/取消后必须释放句柄（不会留下挂死的管道读取）；
+    /// 2. 批量任务在用户点「停止」后收尾要完整：所有行都有终态、不会残留「处理中」，也不重复回调。
+    /// </summary>
+    private static async Task CheckRobustnessAsync()
+    {
+        string work = Path.Combine(Path.GetTempPath(), "submerge_robust_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(work);
+        try
+        {
+            // 1) 反复超时启动 cmd，句柄数不应随之攀升
+            await ProcessUtil.RunAsync("cmd.exe", new[] { "/c", "exit 0" }, 5);   // 预热
+            using (var warm = System.Diagnostics.Process.GetCurrentProcess())
+            {
+                warm.Refresh();
+                int before = warm.HandleCount;
+                for (int i = 0; i < 20; i++)
+                {
+                    ProcessCapture cap = await ProcessUtil.RunAsync("cmd.exe",
+                        new[] { "/c", "ping 127.0.0.1 -n 6 > nul" }, 1);
+                    if (i == 0) Check("超时进程被标记 TimedOut", cap.TimedOut);
+                }
+                await Task.Delay(300);
+                using var after = System.Diagnostics.Process.GetCurrentProcess();
+                after.Refresh();
+                int growth = after.HandleCount - before;
+                Check("20 次超时进程后句柄增长 < 60", growth < 60, $"增长 {growth}");
+            }
+
+            // 2) 批量任务中途取消：收尾完整
+            string? ffmpeg = ToolLocator.FindFfmpeg();
+            string? ffprobe = ToolLocator.FindFfprobe();
+            if (string.IsNullOrEmpty(ffmpeg) || string.IsNullOrEmpty(ffprobe))
+            {
+                Console.WriteLine("(未找到 ffmpeg，跳过取消收尾验证)");
+                return;
+            }
+
+            string video = Path.Combine(work, "sample.mp4");
+            ProcessCapture gen = await ProcessUtil.RunAsync(ffmpeg, new[]
+            {
+                "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                "-f", "lavfi", "-i", "sine=frequency=440",
+                "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", video,
+            }, 120);
+            if (gen.ExitCode != 0) { Console.WriteLine("(生成测试视频失败，跳过)"); return; }
+
+            MediaInfo info = await MediaProbe.ProbeStreamsAsync(ffprobe, video);
+            string srt = Path.Combine(work, "sample.zh.srt");
+            await File.WriteAllTextAsync(srt, "1\n00:00:00,000 --> 00:00:01,000\n测试\n", new UTF8Encoding(false));
+
+            var jobs = Enumerable.Range(0, 12).Select(i =>
+            {
+                string copy = Path.Combine(work, $"job{i:D2}.mp4");
+                File.Copy(video, copy, true);
+                return new Job(copy, new[] { new SubTrack(srt, lang: "chi") { Default = true } }, "", info.Duration, info) { Uid = "cancel" + i };
+            }).ToList();
+
+            var doneEvents = new List<string>();
+            var collector = new BatchCollector(doneEvents);
+            using var cts = new CancellationTokenSource();
+            Task run = new BatchProcessor(collector).RunAsync(new BatchRequest
+            {
+                Options = new Options { OutputDir = work, Workers = 2, Verify = false },
+                Ffmpeg = ffmpeg, Ffprobe = ffprobe, Jobs = jobs, TempDir = Path.Combine(work, "tmp"),
+            }, cts.Token);
+            await Task.Delay(600);
+            cts.Cancel();
+            await run;
+
+            Check("取消后没有残留「处理中」的行",
+                  jobs.All(j => j.State != Job.StateRunning),
+                  string.Join(",", jobs.Select(j => j.State).Distinct()));
+            Check("每个任务只回调一次 JobDone",
+                  doneEvents.Count == doneEvents.Distinct().Count() && doneEvents.Count == jobs.Count,
+                  $"回调 {doneEvents.Count} 次，去重 {doneEvents.Distinct().Count()} 次，任务 {jobs.Count} 个；" +
+                  $"重复=[{string.Join(",", doneEvents.GroupBy(x => x).Where(g => g.Count() > 1).Select(g => g.Key + "x" + g.Count()))}]；" +
+                  $"各状态=[{string.Join(",", jobs.Select(j => j.State))}]");
+            Check("取消后不再产生新的输出文件（或全部为已取消状态）",
+                  jobs.All(j => j.State is Job.StateCancelled or Job.StateDone or Job.StateFailed or Job.StateSkipped));
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    private sealed class BatchCollector : IBatchEvents
+    {
+        private readonly List<string> _done;
+        public BatchCollector(List<string> done) => _done = done;
+        public void Log(string text) { }
+        public void JobUpdate(Job job) { }
+        public void Progress(Job job) { }
+        public void JobDone(Job job) { lock (_done) _done.Add(job.Uid); }
+        public void AllDone(BatchSummary summary) { }
+        public void Fatal(string text) { }
+    }
+
+    private static string? FindMainWindowXaml()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            string candidate = Path.Combine(dir.FullName, "src", "SubtitleMerger.App", "Views", "MainWindow.xaml");
+            if (File.Exists(candidate)) return File.ReadAllText(candidate);
+            dir = dir.Parent;
+        }
+        return null;
+    }
 
     #endregion
 

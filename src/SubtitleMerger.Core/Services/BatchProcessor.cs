@@ -94,44 +94,57 @@ public sealed class BatchProcessor
     {
         int workers = Math.Max(1, request.Options.Workers);
         using var semaphore = new SemaphoreSlim(workers);
-        var map = new Dictionary<Task, Job>();
-        var tasks = new List<Task>();
+        // 完成通知用 Channel 而不是「每完成一个就扫一遍所有 Task」：
+        // 旧实现在几百个任务时每秒要做上千次 Task.WhenAny，且为每个任务额外起了��个 Task，
+        // 重负载下 UI/线程池都会被拖慢。
+        var completed = System.Threading.Channels.Channel.CreateUnbounded<Job>();
 
+        var tasks = new List<Task>(request.Jobs.Count);
         foreach (Job job in request.Jobs)
         {
             Job captured = job;
-            Task task = Task.Run(async () =>
+            tasks.Add(Task.Run(async () =>
             {
-                try { await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false); }
+                bool entered = false;
+                try
+                {
+                    await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    entered = true;
+                    await RunJobAsync(captured, request, cancellationToken).ConfigureAwait(false);
+                }
                 catch (OperationCanceledException)
                 {
+                    // 还没轮到就取消了：也要给一个终态，界面行才不会一直停在「待处理」
                     captured.State = Job.StateCancelled;
-                    return;
+                    captured.FinishedAt ??= Formatting.UnixNow();
                 }
-                try { await RunJobAsync(captured, request, cancellationToken).ConfigureAwait(false); }
-                finally { semaphore.Release(); }
-            }, CancellationToken.None);
-            tasks.Add(task);
-            map[task] = captured;
+                catch (Exception ex)
+                {
+                    captured.State = Job.StateFailed;
+                    captured.Message = Formatting.Truncate(ex.Message, 200);
+                }
+                finally
+                {
+                    if (entered) semaphore.Release();
+                    completed.Writer.TryWrite(captured);
+                }
+            }, CancellationToken.None));
         }
 
-        var pending = new List<Task>(tasks);
-        while (pending.Count > 0)
+        // 逐个「按完成顺序」回调 job_done。用户点停止后，每个任务（含被取消的）
+        // 仍然回调一次：界面行必须有终态，总进度条也要能走完，否则会残留「处理中」的行。
+        for (int i = 0; i < request.Jobs.Count; i++)
         {
-            Task finished = await Task.WhenAny(pending).ConfigureAwait(false);
-            pending.Remove(finished);
-            if (cancellationToken.IsCancellationRequested) break;
-            Job job = map[finished];
+            Job finished;
             try
             {
-                await finished.ConfigureAwait(false);
+                finished = await completed.Reader.ReadAsync().ConfigureAwait(false);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                job.State = Job.StateFailed;
-                job.Message = Formatting.Truncate(ex.Message, 200);
+                break;
             }
-            _events.JobDone(job);
+            _events.JobDone(finished);
         }
 
         try { await Task.WhenAll(tasks).ConfigureAwait(false); } catch { /* 已在处理中记录 */ }
@@ -148,6 +161,9 @@ public sealed class BatchProcessor
         Options options = request.Options;
         job.State = Job.StateRunning;
         job.StartedAt = Formatting.UnixNow();
+        job.FinishedAt = null;          // 重置上一轮的完成时间，避免停止后误报「已完成」
+        job.VerifyOk = null;
+        job.VerifyIssues = new List<string>();
         job.Progress = 0.0;
         _events.JobUpdate(job);
 

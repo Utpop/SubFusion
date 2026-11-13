@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
+using SubtitleMerger.App.Services;
 using SubtitleMerger.App.Views;
 
 namespace SubtitleMerger.App;
@@ -11,7 +12,17 @@ namespace SubtitleMerger.App;
 /// <summary>应用入口。WinUI 3 自动生成 Main 与 Windows App SDK 引导逻辑。</summary>
 public partial class App : Application
 {
-    public App() => InitializeComponent();
+    public App()
+    {
+        InitializeComponent();
+        CrashGuard.Install();
+        UnhandledException += (_, e) =>
+        {
+            // WinUI 对未处理异常默认直接终止进程；这里先落盘再给出可读提示
+            e.Handled = false;
+            CrashGuard.ReportUnhandledAndExit(e.Exception, "XamlUnhandled");
+        };
+    }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {

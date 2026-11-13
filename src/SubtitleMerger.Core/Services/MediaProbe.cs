@@ -165,24 +165,35 @@ public static class MediaProbe
             return new Dictionary<string, MediaInfo>(StringComparer.Ordinal);
 
         workers = Math.Clamp(workers, 1, 8);
-        using var semaphore = new SemaphoreSlim(workers);
-        var tasks = pathList.Select(async path =>
+        // 有界并发：旧写法一次性为每个文件创建 Task（每个都挂在 SemaphoreSlim 上等待，
+        // 取消时还会全部抛 OperationCanceledException），几百上千个文件时任务/定时器数量
+        // 与文件数成正比。Parallel.ForEachAsync 只保留 workers 个在途任务。
+        var options = new ParallelOptions
         {
-            try { await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false); }
-            catch (OperationCanceledException) { return; }
-            try
+            MaxDegreeOfParallelism = workers,
+            CancellationToken = cancellationToken,
+        };
+        try
+        {
+            await Parallel.ForEachAsync(pathList, options, async (path, ct) =>
             {
-                if (cancellationToken.IsCancellationRequested) return;
-                MediaInfo info = await ProbeStreamsAsync(ffprobe, path, 30, cancellationToken)
-                    .ConfigureAwait(false);
+                MediaInfo info;
+                try
+                {
+                    info = await ProbeStreamsAsync(ffprobe, path, 30, ct).ConfigureAwait(false);
+                }
+                catch
+                {
+                    return;   // 单个文件失败只跳过
+                }
                 results[path] = info;
                 try { onResult?.Invoke(path, info); } catch { /* 回调异常不影响探测 */ }
-            }
-            catch { /* 单个文件失败只跳过 */ }
-            finally { semaphore.Release(); }
-        }).ToList();
-
-        try { await Task.WhenAll(tasks).ConfigureAwait(false); } catch { /* 取消等异常忽略 */ }
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // 取消（用户停止 / 关闭窗口）：已探测的结果照常返回
+        }
         return results.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
     }
 }
