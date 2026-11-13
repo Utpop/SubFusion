@@ -134,7 +134,21 @@ public sealed partial class MainWindow : Window, IUiServices
             };
         }
 
+        // 复现/自检钩子（--dir <文件夹>）：走与拖放完全相同的 AddPathsAsync 路径把文件加进来。
+        // 仅用于自动化复现与验收，正常双击启动不会触发。
+        string[] argv2 = Environment.GetCommandLineArgs();
+        int dirArg = Array.IndexOf(argv2, "--dir");
+        if (dirArg >= 0 && dirArg + 1 < argv2.Length)
+            _ = LoadFolderForTestAsync(argv2[dirArg + 1]);
+
         ViewModel.Initialize();
+    }
+
+    private async Task LoadFolderForTestAsync(string folder)
+    {
+        await Task.Delay(1200);
+        try { await ViewModel.AddPathsAsync(new[] { folder }); }
+        catch (Exception ex) { App.LogTest("--dir 失败：" + ex); }
     }
 
     #region IUiServices —— 原生文件 / 文件夹 / 保存对话框
@@ -143,37 +157,67 @@ public sealed partial class MainWindow : Window, IUiServices
 
     private void InitPicker(object picker) => InitializeWithWindow.Initialize(picker, _hwnd);
 
+    /// <summary>
+    /// WinRT 的 FileOpenPicker / FolderPicker / FileSavePicker 在**管理员（提升）进程**里不可用：
+    /// 它们依赖未提升的 Shell 代理，调用会以 E_ACCESSDENIED 失败；在 WinUI 的 async void
+    /// 命令里该异常会直接逃逸成 fail-fast（事件日志 0xc000027b），表现为「点一下按钮程序就没了」。
+    /// 因此提升运行时统一改走经典 Win32 对话框。
+    /// </summary>
+    private static bool UseClassicDialogs => ClassicDialogs.IsElevated();
+
     public async Task<IReadOnlyList<string>> PickFilesAsync(string title,
                                                             IReadOnlyList<string> extensions,
                                                             bool allowAll = true)
     {
-        var picker = new FileOpenPicker
+        if (UseClassicDialogs)
+            return ClassicDialogs.OpenFiles(_hwnd, title, extensions, allowAll);
+
+        try
         {
-            ViewMode = PickerViewMode.List,
-            SuggestedStartLocation = SuggestedLocation(),
-            SettingsIdentifier = "SubtitleMerger.Files",
-            CommitButtonText = title,
-        };
-        InitPicker(picker);
-        foreach (string ext in extensions) picker.FileTypeFilter.Add(ext);
-        if (allowAll) picker.FileTypeFilter.Add("*");
-        IReadOnlyList<Windows.Storage.StorageFile> files = await picker.PickMultipleFilesAsync();
-        return files.Select(f => f.Path).Where(p => !string.IsNullOrEmpty(p)).ToList();
+            var picker = new FileOpenPicker
+            {
+                ViewMode = PickerViewMode.List,
+                SuggestedStartLocation = SuggestedLocation(),
+                SettingsIdentifier = "SubtitleMerger.Files",
+                CommitButtonText = title,
+            };
+            InitPicker(picker);
+            foreach (string ext in extensions) picker.FileTypeFilter.Add(ext);
+            if (allowAll) picker.FileTypeFilter.Add("*");
+            IReadOnlyList<Windows.Storage.StorageFile> files = await picker.PickMultipleFilesAsync();
+            return files.Select(f => f.Path).Where(p => !string.IsNullOrEmpty(p)).ToList();
+        }
+        catch (Exception ex) when (IsPickerAccessDenied(ex))
+        {
+            Log("文件选择器不可用（E_ACCESSDENIED），已切换到系统对话框");
+            return ClassicDialogs.OpenFiles(_hwnd, title, extensions, allowAll);
+        }
     }
 
     public async Task<string?> PickFolderAsync(string title)
     {
-        var picker = new FolderPicker
+        if (UseClassicDialogs)
+            return ClassicDialogs.PickFolder(_hwnd, title);
+
+        try
         {
-            ViewMode = PickerViewMode.List,
-            SuggestedStartLocation = SuggestedLocation(),
-            SettingsIdentifier = "SubtitleMerger.Folders",
-            CommitButtonText = title,
-        };
-        InitPicker(picker);
-        picker.FileTypeFilter.Add("*");
-        Windows.Storage.StorageFolder? folder = await picker.PickSingleFolderAsync();
-        return folder?.Path;
+            var picker = new FolderPicker
+            {
+                ViewMode = PickerViewMode.List,
+                SuggestedStartLocation = SuggestedLocation(),
+                SettingsIdentifier = "SubtitleMerger.Folders",
+                CommitButtonText = title,
+            };
+            InitPicker(picker);
+            picker.FileTypeFilter.Add("*");
+            Windows.Storage.StorageFolder? folder = await picker.PickSingleFolderAsync();
+            return folder?.Path;
+        }
+        catch (Exception ex) when (IsPickerAccessDenied(ex))
+        {
+            Log("文件夹选择器不可用（E_ACCESSDENIED），已切换到系统对话框");
+            return ClassicDialogs.PickFolder(_hwnd, title);
+        }
     }
 
     /// <summary>
@@ -184,35 +228,72 @@ public sealed partial class MainWindow : Window, IUiServices
     public async Task<string?> PickExecutableAsync(string title, string? initialDir)
     {
         _ = initialDir;
-        var picker = new FileOpenPicker
+        if (UseClassicDialogs)
+            return ClassicDialogs.OpenFiles(_hwnd, title, new[] { ".exe" }, allowAll: true).FirstOrDefault();
+
+        try
         {
-            ViewMode = PickerViewMode.List,
-            SuggestedStartLocation = PickerLocationId.ComputerFolder,
-            SettingsIdentifier = "SubtitleMerger.Executable",
-            CommitButtonText = title,
-        };
-        InitPicker(picker);
-        picker.FileTypeFilter.Add(".exe");
-        picker.FileTypeFilter.Add("*");
-        Windows.Storage.StorageFile? file = await picker.PickSingleFileAsync();
-        return file?.Path;
+            var picker = new FileOpenPicker
+            {
+                ViewMode = PickerViewMode.List,
+                SuggestedStartLocation = PickerLocationId.ComputerFolder,
+                SettingsIdentifier = "SubtitleMerger.Executable",
+                CommitButtonText = title,
+            };
+            InitPicker(picker);
+            picker.FileTypeFilter.Add(".exe");
+            picker.FileTypeFilter.Add("*");
+            Windows.Storage.StorageFile? file = await picker.PickSingleFileAsync();
+            return file?.Path;
+        }
+        catch (Exception ex) when (IsPickerAccessDenied(ex))
+        {
+            Log("文件选择器不可用（E_ACCESSDENIED），已切换到系统对话框");
+            return ClassicDialogs.OpenFiles(_hwnd, title, new[] { ".exe" }, allowAll: true).FirstOrDefault();
+        }
     }
 
     public async Task<string?> PickSaveCsvAsync(string suggestedName, string initialDir)
     {
         _ = initialDir;
-        var picker = new FileSavePicker
+        if (UseClassicDialogs)
+            return ClassicDialogs.SaveFile(_hwnd, "导出报告", suggestedName, ".csv");
+
+        try
         {
-            SuggestedFileName = suggestedName,
-            DefaultFileExtension = ".csv",
-            SuggestedStartLocation = PickerLocationId.DocumentsLibrary,
-            SettingsIdentifier = "SubtitleMerger.Report",
-        };
-        InitPicker(picker);
-        picker.FileTypeChoices.Add("CSV", new List<string> { ".csv" });
-        Windows.Storage.StorageFile? file = await picker.PickSaveFileAsync();
-        return file?.Path;
+            var picker = new FileSavePicker
+            {
+                SuggestedFileName = suggestedName,
+                DefaultFileExtension = ".csv",
+                SuggestedStartLocation = PickerLocationId.DocumentsLibrary,
+                SettingsIdentifier = "SubtitleMerger.Report",
+            };
+            InitPicker(picker);
+            picker.FileTypeChoices.Add("CSV", new List<string> { ".csv" });
+            Windows.Storage.StorageFile? file = await picker.PickSaveFileAsync();
+            return file?.Path;
+        }
+        catch (Exception ex) when (IsPickerAccessDenied(ex))
+        {
+            Log("保存对话框不可用（E_ACCESSDENIED），已切换到系统对话框");
+            return ClassicDialogs.SaveFile(_hwnd, "导出报告", suggestedName, ".csv");
+        }
     }
+
+    /// <summary>判断是不是「提升进程里 picker 被拒绝」这一类异常（HRESULT 0x80070005）。</summary>
+    private static bool IsPickerAccessDenied(Exception ex)
+    {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is System.UnauthorizedAccessException) return true;
+            if (e.HResult == unchecked((int)0x80070005)) return true;   // E_ACCESSDENIED
+            if (e is System.Runtime.InteropServices.COMException com &&
+                com.HResult == unchecked((int)0x80070005)) return true;
+        }
+        return false;
+    }
+
+    private void Log(string text) => ViewModel?.Log(text);
 
     private ContentDialog MakeDialog(string message, string primary, string? close)
         => new()
@@ -307,9 +388,12 @@ public sealed partial class MainWindow : Window, IUiServices
     private void Root_DragLeave(object sender, DragEventArgs e)
         => DropOutline.Stroke = new SolidColorBrush(Color.FromArgb(255, 156, 184, 216));
 
-    private async void Root_Drop(object sender, DragEventArgs e)
+    private void Root_Drop(object sender, DragEventArgs e)
+        => CrashGuard.FireAndForget(() => DropAsync(e), "Root_Drop");
+
+    private async Task DropAsync(DragEventArgs e)
     {
-        Root_DragLeave(sender, e);
+        Root_DragLeave(null!, e);
         if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
         try
         {
@@ -329,8 +413,8 @@ public sealed partial class MainWindow : Window, IUiServices
     private void JobsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         => ViewModel.SetSelection(JobsList.SelectedItems.OfType<JobViewModel>());
 
-    private async void JobsList_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
-        => await ViewModel.EditSubtitlesAsync();
+    private void JobsList_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
+        => CrashGuard.FireAndForget(() => ViewModel.EditSubtitlesAsync(), "JobsList_DoubleTapped");
 
     private void JobsList_RightTapped(object sender, RightTappedRoutedEventArgs e)
     {
@@ -369,7 +453,10 @@ public sealed partial class MainWindow : Window, IUiServices
 
     #region 关闭确认
 
-    private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
+    private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
+        => CrashGuard.FireAndForget(() => ClosingAsync(args), "OnAppWindowClosing");
+
+    private async Task ClosingAsync(AppWindowClosingEventArgs args)
     {
         if (_allowClose) return;
         args.Cancel = true;

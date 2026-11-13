@@ -36,6 +36,8 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
 
     private readonly HashSet<string> _dirtyRows = new(StringComparer.Ordinal);
     private volatile bool _progressFlushScheduled;
+    private static readonly bool _mirrorLog = true;
+    private static readonly object _logMirrorGate = new();
 
     private int _uidSeq;
     private string? _ffmpeg;
@@ -687,6 +689,17 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
     public void Log(string text)
     {
         string stamp = DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+        // 诊断镜像（SUBMERGE_LOG=1）：把同一份日志写进 %TEMP%\subtitle_merger_gui.log，
+        // 便于在无法目测界面时拿到 GUI 里真实发生的 ffmpeg 命令与错误。
+        if (_mirrorLog)
+        {
+            try
+            {
+                string path = Path.Combine(Path.GetTempPath(), "subtitle_merger_gui.log");
+                lock (_logMirrorGate) File.AppendAllText(path, $"[{stamp}] {text}\n", new UTF8Encoding(false));
+            }
+            catch { /* 镜像失败不影响界面 */ }
+        }
         bool dispatchNow = false;
         lock (_pendingLogGate)
         {

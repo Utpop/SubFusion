@@ -277,8 +277,13 @@ public sealed class BatchProcessor
             string reason = string.IsNullOrEmpty(error)
                 ? $"ffmpeg 返回码 {code.ToString(CultureInfo.InvariantCulture)}" : error;
             job.Message = Formatting.Truncate(reason, 200);
-            foreach (string line in logLines.TakeLast(6))
+            // 失败时把 ffmpeg 的完整错误（最多 maxLog 行）写进日志：
+            // 旧实现只取最后 6 行，遇到多行报错时会丢掉真正的根因。
+            _events.Log($"[失败] {job.Name}：ffmpeg 返回码 {code.ToString(CultureInfo.InvariantCulture)}");
+            foreach (string line in logLines)
                 _events.Log($"[错误] {job.Name}：{line}");
+            if (logLines.Count == 0)
+                _events.Log($"[错误] {job.Name}：ffmpeg 没有输出错误信息");
         }
     }
 }

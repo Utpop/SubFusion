@@ -46,4 +46,15 @@ public partial class App : Application
         };
         timer.Start();
     }
+
+    /// <summary>自动化复现用的轻量日志：写 %TEMP%\subtitle_merger_test.txt（正常启动不写）。</summary>
+    public static void LogTest(string text)
+    {
+        try
+        {
+            File.AppendAllText(Path.Combine(Path.GetTempPath(), "subtitle_merger_test.txt"),
+                $"[{DateTime.Now:HH:mm:ss.fff}] {text}\n");
+        }
+        catch { /* 测试日志失败不影响主流程 */ }
+    }
 }

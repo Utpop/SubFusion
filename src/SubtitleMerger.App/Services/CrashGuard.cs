@@ -34,11 +34,43 @@ internal static class CrashGuard
             Write("UnobservedTask", e.Exception);
         };
 
+        // 诊断开关（SUBMERGE_TRACE=1）：记录所有首次异常，用于定位「异常被 async void 吞掉后
+        // 直接 fail-fast」这类没有托管未处理异常现场的崩溃。
+        if (Environment.GetEnvironmentVariable("SUBMERGE_TRACE") == "1")
+        {
+            AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
+                Write($"FirstChance({e.Exception.GetType().Name})", e.Exception, firstChance: true);
+        }
+
         try
         {
             SetUnhandledExceptionFilter(OnSerh);
         }
         catch { /* 部分受限环境不允许安装过滤器，忽略 */ }
+    }
+
+    /// <summary>
+    /// 包住 async void 事件处理器：任何异常都在此处吞掉并记录，而不是逃逸到 WinUI 消息循环。
+    /// 未捕获异常逃逸到消息循环就是 0xc000027b fail-fast（进程直接消失，无任何提示）。
+    /// </summary>
+    public static async void FireAndForget(Func<Task> action, string origin)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            Write(origin, ex);
+            try
+            {
+                _ = MessageBoxW(IntPtr.Zero,
+                    $"{Constants.AppName} 操作失败（已记录到 {LogPath}）：\n\n" +
+                    $"{ex.GetType().Name}: {Truncate(ex.Message, 300)}",
+                    Constants.AppName, 0x00000030 /* MB_ICONWARNING */);
+            }
+            catch { /* 提示失败也不能再抛 */ }
+        }
     }
 
     /// <summary>WinUI 没有恢复路径时调用：记录并提示用户日志位置。</summary>
@@ -53,7 +85,7 @@ internal static class CrashGuard
         Environment.Exit(2);
     }
 
-    public static void Write(string origin, Exception? ex)
+    public static void Write(string origin, Exception? ex, bool firstChance = false)
     {
         lock (Gate)
         {
@@ -69,11 +101,13 @@ internal static class CrashGuard
                 if (ex is not null) sb.AppendLine(ex.ToString());
                 else sb.AppendLine("(no managed exception object)");
                 sb.AppendLine(new string('-', 60));
-                File.AppendAllText(LogPath, sb.ToString(), Encoding.UTF8);
+                File.AppendAllText(firstChance ? TracePath : LogPath, sb.ToString(), Encoding.UTF8);
             }
             catch { /* 记录失败不能引发二次崩溃 */ }
         }
     }
+
+    private static string TracePath => Path.Combine(Path.GetTempPath(), "subtitle_merger_trace.txt");
 
     private static IntPtr OnSerh(IntPtr exceptionPointers)
     {

@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using SubtitleMerger.App.Services;
 using SubtitleMerger.Core;
 using SubtitleMerger.Core.Models;
 using SubtitleMerger.Core.Services;
@@ -137,7 +138,10 @@ public sealed partial class SubtitleTrackDialog : ContentDialog
 
     private void SelectedList_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) => OnRemove(sender, e);
 
-    private async void OnBrowse(object sender, RoutedEventArgs e)
+    private void OnBrowse(object sender, RoutedEventArgs e)
+        => CrashGuard.FireAndForget(BrowseAsync, "SubtitleTrackDialog.OnBrowse");
+
+    private async Task BrowseAsync()
     {
         IReadOnlyList<string> paths = await _browse();
         foreach (string path in paths) AddPath(path);
