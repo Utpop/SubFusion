@@ -11,6 +11,15 @@
             </ResourceDictionary.MergedDictionaries>
             <converters:StateToBrushConverter x:Key="StateToBrush" />
             <converters:HexToBrushConverter x:Key="HexToBrush" />
+            <converters:FileNameConverter x:Key="FileName" />
+
+            <!--
+              ContentDialog 的可视宽度由 ContentDialogMaxWidth / ContentDialogMinWidth 主题资源控制，
+              直接写 ContentDialog.MaxWidth 属性是无效的（会被该资源覆盖，默认只有 548 DIP），
+              表现为对话框被压窄、右侧内容被裁。这里在应用级覆盖，字幕轨设置这类宽对话框才能展开。
+            -->
+            <x:Double x:Key="ContentDialogMaxWidth">1100</x:Double>
+            <x:Double x:Key="ContentDialogMinWidth">600</x:Double>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

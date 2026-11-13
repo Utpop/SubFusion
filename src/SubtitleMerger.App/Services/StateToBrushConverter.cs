@@ -49,3 +49,21 @@ public sealed class HexToBrushConverter : IValueConverter
         return new SolidColorBrush(Color.FromArgb(255, r, g, b));
     }
 }
+
+/// <summary>
+/// 完整路径 → 文件名。字幕候选列表里直接绑路径会把列表撑得很宽，
+/// 只显示文件名、完整路径放到工具提示里更好读。
+/// </summary>
+public sealed class FileNameConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language)
+    {
+        string path = value as string ?? "";
+        if (path.Length == 0) return "";
+        try { return System.IO.Path.GetFileName(path); }
+        catch { return path; }
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language)
+        => throw new NotSupportedException();
+}
