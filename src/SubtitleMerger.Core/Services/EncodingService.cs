@@ -274,8 +274,6 @@ public static class EncodingService
     {
         DetectedEncoding detected = DetectEncoding(path);
         string encoding = detected.Encoding;
-        if (encoding == "utf-8" && !detected.HasBom)
-            return new ConvertResult(path, false, encoding);
 
         byte[] raw;
         try { raw = File.ReadAllBytes(path); }
@@ -283,6 +281,14 @@ public static class EncodingService
 
         string text = Decode(raw, encoding);
         if (detected.HasBom) text = StripBomChar(text);
+
+        // 即便已是 UTF-8，ASS/SSA 仍可能需要补段头（见 NormalizeAssScriptInfo），
+        // 因此只有「无需改编码 且 无需修复结构」时才原样返回。
+        bool repair = NeedsScriptInfoRepair(path, text);
+        if (encoding == "utf-8" && !detected.HasBom && !repair)
+            return new ConvertResult(path, false, encoding);
+
+        if (repair) text = NormalizeAssScriptInfo(text);
 
         try { Directory.CreateDirectory(tempDir); }
         catch { return new ConvertResult(path, false, encoding); }
@@ -298,6 +304,57 @@ public static class EncodingService
             return new ConvertResult(outPath, true, encoding);
         }
         catch { return new ConvertResult(path, false, encoding); }
+    }
+
+    #endregion
+
+    #region ASS/SSA 结构修复
+
+    /// <summary>
+    /// 判断 ASS/SSA 是否缺少 <c>[Script Info]</c> 段头。
+    ///
+    /// 有些字幕站/工具导出的 .ass 会把 <c>[Script Info]</c> 这一行本身丢掉，
+    /// 文件直接从 <c>Title:</c> 开始。libavformat 的 ass 解析器要求第一行必须是段头，
+    /// 于是整个文件被判为 <c>Invalid data found</c>，进而被当成「无效字幕」剔除——
+    /// 表现为界面上明明是有效字幕，开始处理却全部「没有可用字幕轨」。
+    /// </summary>
+    public static bool NeedsScriptInfoRepair(string path, string? text = null)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext is not (".ass" or ".ssa")) return false;
+        if (text is null)
+        {
+            try
+            {
+                DetectedEncoding detected = DetectEncoding(path);
+                byte[] raw = File.ReadAllBytes(path);
+                text = Decode(raw, detected.Encoding);
+                if (detected.HasBom) text = StripBomChar(text);
+            }
+            catch { return false; }
+        }
+
+        // 取第一行非空内容判断
+        foreach (string line in text.Split('\n'))
+        {
+            string trimmed = line.Trim().Trim('\uFEFF', '\r');
+            if (trimmed.Length == 0) continue;
+            return !trimmed.StartsWith("[Script Info]", StringComparison.OrdinalIgnoreCase);
+        }
+        return false;
+    }
+
+    /// <summary>在文件开头补上缺失的 <c>[Script Info]</c> 段头（幂等：已存在时原样返回）。</summary>
+    public static string NormalizeAssScriptInfo(string text)
+    {
+        foreach (string line in text.Split('\n'))
+        {
+            string trimmed = line.Trim().Trim('\uFEFF', '\r');
+            if (trimmed.Length == 0) continue;
+            if (trimmed.StartsWith("[Script Info]", StringComparison.OrdinalIgnoreCase)) return text;
+            break;
+        }
+        return "[Script Info]\r\n" + text.TrimStart('\uFEFF');
     }
 
     #endregion
@@ -334,6 +391,7 @@ public static class EncodingService
                     byte[] raw = File.ReadAllBytes(track.Path);
                     string text = Decode(raw, detected.Encoding);
                     text = StripBomChar(text);     // 原实现无条件去 BOM 字符
+                    text = NormalizeAssScriptInfo(text);   // 缺 [Script Info] 时补段头，否则 libass 不认
                     File.WriteAllText(target, text, new UTF8Encoding(false));
                 }
                 else

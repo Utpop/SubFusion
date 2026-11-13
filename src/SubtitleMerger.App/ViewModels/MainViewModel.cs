@@ -36,7 +36,10 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
 
     private readonly HashSet<string> _dirtyRows = new(StringComparer.Ordinal);
     private volatile bool _progressFlushScheduled;
-    private static readonly bool _mirrorLog = true;
+    // 日志镜像默认关闭：仅当设置环境变量 SUBMERGE_LOG=1 时写 %TEMP%\subtitle_merger_gui.log。
+    // （曾用于排查管理员权限崩溃；若常开会在批量处理时每条日志都同步写盘，明显拖慢界面。）
+    private static readonly bool _mirrorLog =
+        Environment.GetEnvironmentVariable("SUBMERGE_LOG") == "1";
     private static readonly object _logMirrorGate = new();
 
     private int _uidSeq;
@@ -507,6 +510,15 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
                 try
                 {
                     result = await MediaProbe.ProbeSubtitleAsync(probe, path).WaitAsync(TimeSpan.FromSeconds(25), ct);
+
+                    // 有些 .ass/.ssa 只是缺了 [Script Info] 段头，ffprobe 会报 Invalid data，
+                    // 但补上段头就能正常识别。这种情况判为可用，转换阶段会自动修复，
+                    // 不能因为文件本身的小瑕疵把整条字幕丢掉（否则整批任务全部「没有可用字幕轨」）。
+                    if (!result.Ok && EncodingService.NeedsScriptInfoRepair(path))
+                    {
+                        Log($"[修复] {Path.GetFileName(path)}：缺少 [Script Info] 段头，已自动补全后继续");
+                        result = (true, "");
+                    }
                 }
                 catch
                 {
