@@ -30,7 +30,10 @@ public sealed partial class MainWindow : Window, IUiServices
     private readonly AppWindow _appWindow;
     private bool _allowClose;
 
+    /// <summary>主视图模型。在构造函数末尾赋值；此前的原生回调需用 ViewModelOrNull 访问。</summary>
     public MainViewModel ViewModel { get; }
+
+    private MainViewModel? ViewModelOrNull => ViewModel;
 
     public MainWindow()
     {
@@ -40,6 +43,11 @@ public sealed partial class MainWindow : Window, IUiServices
         _hwnd = WindowNative.GetWindowHandle(this);
         WindowId windowId = Win32Interop.GetWindowIdFromWindow(_hwnd);
         _appWindow = AppWindow.GetFromWindowId(windowId);
+
+        // 程序默认以管理员权限运行（app.manifest 的 requireAdministrator）。
+        // 提升后 UIPI 会丢弃普通权限资源管理器发来的拖放消息，导致拖放完全没反应；
+        // 这里先放行相关消息，再挂上 WM_DROPFILES 兜底，两条路都通。
+        DragDropUnblocker.Apply(_hwnd);
 
         Title = $"{Constants.AppName} v{Constants.AppVersion}";
 
@@ -78,6 +86,15 @@ public sealed partial class MainWindow : Window, IUiServices
         NativeWindowHelper.SetMinimumSize(_hwnd,
             (int)Math.Min(1120, Math.Max(900, workArea.Width - 24)),
             (int)Math.Min(800, Math.Max(600, workArea.Height - 24)));
+
+        // 拖放兜底：管理员运行时 OLE 拖放可能被 UIPI 拦掉，用经典 WM_DROPFILES 补一条通路。
+        // 回调里再取 ViewModel（此处构造顺序上它还没赋值）。
+        NativeWindowHelper.SetDropHandler(_hwnd, paths =>
+        {
+            MainViewModel? vm = ViewModelOrNull;
+            if (vm is null) return;
+            CrashGuard.FireAndForget(() => vm.AddPathsAsync(paths), "DropFiles");
+        });
 
         ViewModel = new MainViewModel(this);
         Root.DataContext = ViewModel;
@@ -141,7 +158,75 @@ public sealed partial class MainWindow : Window, IUiServices
         if (dirArg >= 0 && dirArg + 1 < argv2.Length)
             _ = LoadFolderForTestAsync(argv2[dirArg + 1]);
 
+        // 自检钩子（--dialog-report）：直接打开字幕轨设置对话框并量测实际尺寸，
+        // 用于验证「对话框宽度被 ContentDialogMaxWidth 主题资源压窄」这类无法目测的布局问题。
+        if (argv2.Contains("--dialog-report"))
+            _ = ReportDialogAsync();
+
         ViewModel.Initialize();
+    }
+
+    private async Task ReportDialogAsync()
+    {
+        await Task.Delay(4000);
+        var sb = new System.Text.StringBuilder();
+        try
+        {
+            sb.AppendLine($"window={_appWindow.Size.Width}x{_appWindow.Size.Height} " +
+                          $"scale={Root.XamlRoot?.RasterizationScale:F2} " +
+                          $"root={Root.ActualWidth:F0}x{Root.ActualHeight:F0}");
+
+            var dialog = new SubtitleTrackDialog(
+                @"D:\BANGUMI\样例视频.mkv",
+                new[] { @"D:\BANGUMI\样例视频.chs.ass", @"D:\BANGUMI\样例视频.eng.srt" },
+                new[] { @"D:\BANGUMI\样例视频.chs.ass" },
+                new List<SubTrack>(),
+                () => Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>()))
+            {
+                XamlRoot = Root.XamlRoot,
+            };
+            Task<ContentDialogResult> showing = dialog.ShowAsync().AsTask();
+            await Task.Delay(1200);
+            dialog.UpdateLayout();
+            sb.AppendLine($"dialog={dialog.ActualWidth:F0}x{dialog.ActualHeight:F0}");
+            if (dialog.Content is FrameworkElement content)
+            {
+                content.UpdateLayout();
+                sb.AppendLine($"content={content.ActualWidth:F0}x{content.ActualHeight:F0} " +
+                              $"desired={content.DesiredSize.Width:F0}x{content.DesiredSize.Height:F0}");
+            }
+            object? maxRes = Application.Current.Resources["ContentDialogMaxWidth"];
+            object? minRes = Application.Current.Resources["ContentDialogMinWidth"];
+            sb.AppendLine($"ContentDialogMaxWidth={maxRes} ContentDialogMinWidth={minRes}");
+
+            // 截图辅助（--dialog-shot <路径>）：先把对话框留在屏幕上，供外部截图后再关闭
+            string[] argv = Environment.GetCommandLineArgs();
+            int shotArg = Array.IndexOf(argv, "--dialog-shot");
+            if (shotArg >= 0 && shotArg + 1 < argv.Length)
+            {
+                string shotPath = argv[shotArg + 1];
+                await Task.Delay(3000);
+                try
+                {
+                    string temp = Path.Combine(Path.GetDirectoryName(shotPath) ?? ".", "dlg_ready.flag");
+                    File.WriteAllText(temp, DateTime.Now.ToString("O"));
+                }
+                catch { /* 忽略 */ }
+                await Task.Delay(6000);
+            }
+
+            dialog.Hide();
+            await showing;
+        }
+        catch (Exception ex)
+        {
+            sb.AppendLine("dialog-report error: " + ex);
+        }
+        finally
+        {
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "subtitle_merger_dialog.txt"), sb.ToString());
+            Environment.Exit(0);
+        }
     }
 
     private async Task LoadFolderForTestAsync(string folder)
