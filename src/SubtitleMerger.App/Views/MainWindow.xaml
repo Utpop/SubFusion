@@ -19,8 +19,10 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" MinHeight="190" />
-            <RowDefinition Height="Auto" />
+            <!-- 1.1：任务表与设置区按 4:6 分配剩余高度（原来表格按 * 吃满、设置区只有固定 236），
+                 这样 1440p/1080p 下设置页也有足够空间；小窗口时任务表先收紧到 120。 -->
+            <RowDefinition Height="0.38*" MinHeight="110" />
+            <RowDefinition Height="0.62*" MinHeight="250" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -110,6 +112,16 @@
                           SelectionChanged="JobsList_SelectionChanged"
                           DoubleTapped="JobsList_DoubleTapped"
                           RightTapped="JobsList_RightTapped">
+                    <!--
+                      1.1：显式启用 UI 虚拟化。默认面板在一次性写入大量条目（几百上千个视频）时
+                      会把每一行都实例化，行模板里有 9 个 TextBlock，重负载下内存与首帧耗时都很可观；
+                      ItemsStackPanel 只创建可视区域内的行（约 20 行），滚动时复用。
+                    -->
+                    <ListView.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <ItemsStackPanel Orientation="Vertical" />
+                        </ItemsPanelTemplate>
+                    </ListView.ItemsPanel>
                     <ListView.ItemContainerStyle>
                         <Style TargetType="ListViewItem">
                             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -182,10 +194,15 @@
         </Border>
 
         <!-- ==================== 设置分页 ==================== -->
-        <Border Grid.Row="4" Margin="20,0,20,10" CornerRadius="8"
+        <!--
+          1.1：原来的固定 Height=252 在 1080p + 125% 缩放（可用高约 816 DIP）下
+          会把底部操作栏挤出窗口。改为随窗口拉伸：大窗口里按内容撑开，
+          小窗口里缩到最小 236 并出现页内滚动条，任何尺寸下都不再裁掉按钮。
+        -->
+        <Border Grid.Row="4" Margin="20,0,20,8" CornerRadius="8"
                 Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-            <Pivot x:Name="SettingsPivot" Height="252">
+            <Pivot x:Name="SettingsPivot">
                 <!-- 原生 Pivot 标题字号偏大，用 HeaderTemplate 统一收小，保留选中指示线与视觉状态 -->
                 <Pivot.HeaderTemplate>
                     <DataTemplate>

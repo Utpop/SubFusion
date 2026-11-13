@@ -11,6 +11,7 @@ using SubtitleMerger.App.ViewModels;
 using SubtitleMerger.Core;
 using SubtitleMerger.Core.Models;
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Foundation;
 using Windows.Graphics;
 using Windows.Storage.Pickers;
 using Windows.UI;
@@ -42,16 +43,28 @@ public sealed partial class MainWindow : Window, IUiServices
 
         Title = $"{Constants.AppName} v{Constants.AppVersion}";
 
-        // 默认窗口调大：任务表共 9 列，1480 宽下基本不必横向滚动。
-        // 受屏幕工作区与最小尺寸 1120x800 双重约束，避免在较小屏幕上超出可视范围。
+        // 1.1：按工作区比例定初始尺寸，而不是写死 1480x980。
+        // 1080p + 125% 缩放时工作区只有约 1600x816 DIP，旧逻辑会先撑到工作区再被裁，
+        // 底部按钮栏随之跑出屏幕。现在默认取工作区的 92%，并保证 9 列任务表不压缩
+        // （最小 1000，列总宽 1176 时任务表内部横向滚动，而不是把整页内容挤掉）。
         RectInt32 workArea = DisplayArea
             .GetFromWindowId(windowId, DisplayAreaFallback.Primary).WorkArea;
-        int width = Math.Clamp(1480, 1120, Math.Max(1120, workArea.Width - 40));
-        int height = Math.Clamp(980, 800, Math.Max(800, workArea.Height - 40));
+        int width = Math.Clamp((int)(workArea.Width * 0.92), 1000, workArea.Width - 24);
+        // 高度留足 88 px 的任务栏/边框余量：否则窗口贴满工作区，内容被系统边距挤出一条竖向滚动条
+        int height = Math.Clamp((int)(workArea.Height * 0.92), 640, workArea.Height - 88);
+        width = Math.Min(width, Math.Max(1000, workArea.Width - 24));
+        height = Math.Min(height, Math.Max(640, workArea.Height - 88));
         _appWindow.Resize(new SizeInt32(width, height));
         _appWindow.Move(new PointInt32(
-            workArea.X + (workArea.Width - width) / 2,
-            workArea.Y + (workArea.Height - height) / 2));
+            workArea.X + Math.Max(0, (workArea.Width - width) / 2),
+            workArea.Y + Math.Max(0, (workArea.Height - height) / 2)));
+
+        // 工作区本身就不大（例如 1080p + 150% 缩放）时直接最大化，保证所有区域都可见
+        if (workArea.Height < 900 || workArea.Width < 1280)
+        {
+            if (_appWindow.Presenter is OverlappedPresenter presenter)
+                presenter.Maximize();
+        }
 
         string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico");
         if (File.Exists(iconPath))
@@ -59,12 +72,67 @@ public sealed partial class MainWindow : Window, IUiServices
             try { _appWindow.SetIcon(iconPath); } catch { /* 图标不可用不影响运行 */ }
         }
 
-        // 原 root.minsize(1120, 800)：WinUI 3 Window 无该属性，用 WM_GETMINMAXINFO 子类化补齐
-        NativeWindowHelper.SetMinimumSize(_hwnd, 1120, 800);
+        // 原 root.minsize(1120, 800)：WinUI 3 Window 无该属性，用 WM_GETMINMAXINFO 子类化补齐。
+        // 1.1：最小尺寸改为不超过工作区（否则小屏上窗口被强制放大，底部按钮栏直接出屏），
+        // 且高度下限放到 640 DIP —— 这一档下任务表与设置页都能靠内部滚动完整操作。
+        NativeWindowHelper.SetMinimumSize(_hwnd,
+            (int)Math.Min(1120, Math.Max(900, workArea.Width - 24)),
+            (int)Math.Min(800, Math.Max(600, workArea.Height - 24)));
 
         ViewModel = new MainViewModel(this);
         Root.DataContext = ViewModel;
         _appWindow.Closing += OnAppWindowClosing;
+
+        // 布局自检（--layout-report，可选再加 --resize WxH 指定窗口像素尺寸）：
+        // 逐个切换设置分页并把每页内容的实际需求尺寸写进临时文件，
+        // 便于验证「所有界面元素都能显示全、没有被裁掉」。
+        if (Environment.GetCommandLineArgs().Any(a => a == "--layout-report"))
+        {
+            string[] argv = Environment.GetCommandLineArgs();
+            int sizeArg = Array.IndexOf(argv, "--resize");
+            if (sizeArg >= 0 && sizeArg + 1 < argv.Length &&
+                argv[sizeArg + 1].Split('x') is [var wS, var hS] &&
+                int.TryParse(wS, out int rw) && int.TryParse(hS, out int rh))
+            {
+                _appWindow.Resize(new SizeInt32(rw, rh));
+            }
+
+            Root.Loaded += async (_, _) =>
+            {
+                await Task.Delay(800);
+                var sb = new System.Text.StringBuilder();
+                double scale = Root.XamlRoot?.RasterizationScale ?? 1.0;
+                sb.AppendLine($"clientDIP={Root.ActualWidth:F0}x{Root.ActualHeight:F0} scale={scale:F2} " +
+                              $"rows=[{Root.RowDefinitions[0].ActualHeight:F0},{Root.RowDefinitions[1].ActualHeight:F0}," +
+                              $"{Root.RowDefinitions[2].ActualHeight:F0},{Root.RowDefinitions[3].ActualHeight:F0}," +
+                              $"{Root.RowDefinitions[4].ActualHeight:F0},{Root.RowDefinitions[5].ActualHeight:F0}]");
+
+                for (int i = 0; i < SettingsPivot.Items.Count; i++)
+                {
+                    SettingsPivot.SelectedIndex = i;
+                    await Task.Delay(350);
+                    Root.UpdateLayout();
+                    var item = (PivotItem)SettingsPivot.Items[i];
+                    string detail = "";
+                    if (item.Content is ScrollViewer sv && sv.Content is FrameworkElement inner)
+                    {
+                        sv.UpdateLayout();
+                        inner.Measure(new Size(sv.ViewportWidth, double.PositiveInfinity));
+                        detail = $" content={inner.DesiredSize.Height:F0} viewport={sv.ViewportHeight:F0}" +
+                                 $" hScroll={sv.ScrollableHeight:F0}";
+                    }
+                    sb.AppendLine($"tab[{i}] {item.Header}: item={item.ActualHeight:F0}{detail}");
+                }
+                SettingsPivot.SelectedIndex = 0;
+
+                var bottom = new List<string>();
+                foreach (FrameworkElement fe in new FrameworkElement[] { JobsList, SettingsPivot })
+                    bottom.Add($"{fe.Name}={fe.ActualHeight:F0}");
+                sb.AppendLine(string.Join(" ", bottom));
+                sb.AppendLine($"buttonsRow={Root.RowDefinitions[5].ActualHeight:F0} windowPX={_appWindow.Size.Width}x{_appWindow.Size.Height}");
+                File.WriteAllText(Path.Combine(Path.GetTempPath(), "subtitle_merger_layout.txt"), sb.ToString());
+            };
+        }
 
         ViewModel.Initialize();
     }
@@ -200,9 +268,16 @@ public sealed partial class MainWindow : Window, IUiServices
         catch { /* 原 _open_path 同样吞掉所有异常 */ }
     }
 
+    private DateTime _lastLogScroll = DateTime.MinValue;
+
     public void ScrollLogToEnd()
     {
-        // 原 txt_log.see("end")：绑定更新后先完成布局，再把视口滚到最底部
+        // 原 txt_log.see("end")：绑定更新后先完成布局，再把视口滚到最底部。
+        // 重负载时日志可能每秒更新几十次，强制 UpdateLayout + ChangeView 会把 UI 线程拖垮，
+        // 这里限流到最多每 120 ms 跟随一次（人工阅读也看不出差别）。
+        DateTime now = DateTime.UtcNow;
+        if ((now - _lastLogScroll).TotalMilliseconds < 120) return;
+        _lastLogScroll = now;
         LogScroll.UpdateLayout();
         LogScroll.ChangeView(null, double.MaxValue, null, disableAnimation: true);
     }
