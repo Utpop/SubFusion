@@ -198,17 +198,26 @@ public sealed class BatchProcessor
             prepared = new List<SubTrack>();
             foreach (SubTrack track in enabled)
             {
-                if (options.ConvertEncoding && track.Kind == "text")
+                // 结构修复（补 [Script Info] 段头）与「转编码」是两件事：
+                // 缺少段头的 ass/ssa 即使不转码也必然让 ffmpeg 报 Invalid data，
+                // 因此这里无条件先修一遍；只有确实需要改动时才使用副本。
+                if (track.Kind == "text")
                 {
-                    ConvertResult converted = EncodingService.EnsureUtf8(track.Path, request.TempDir);
-                    if (!string.IsNullOrEmpty(converted.Encoding))
-                        track.Encoding = converted.Encoding;
-                    if (converted.Created)
+                    bool needsRepair = EncodingService.NeedsScriptInfoRepair(track.Path);
+                    if (needsRepair || options.ConvertEncoding)
                     {
-                        SubTrack clone = track.Clone();
-                        clone.Path = converted.Path;
-                        prepared.Add(clone);
-                        continue;
+                        ConvertResult converted = EncodingService.EnsureUtf8(track.Path, request.TempDir);
+                        if (!string.IsNullOrEmpty(converted.Encoding))
+                            track.Encoding = converted.Encoding;
+                        if (converted.Created)
+                        {
+                            if (needsRepair)
+                                _events.Log($"[修复] {job.Name}：字幕 {track.Name} 缺少 [Script Info] 段头，已自动补全");
+                            SubTrack clone = track.Clone();
+                            clone.Path = converted.Path;
+                            prepared.Add(clone);
+                            continue;
+                        }
                     }
                 }
                 prepared.Add(track);

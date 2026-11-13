@@ -385,7 +385,9 @@ public static class EncodingService
             string target = Path.Combine(workDir, $"hardsub_{index}{ext}");
             try
             {
-                if (convert && IsTextSubtitle(track.Path))
+                // 结构修复（缺 [Script Info]）与转编码独立判断：
+                // 硬字幕走 libass，没有段头同样无法解析，所以即使 convert=false 也要修。
+                if (IsTextSubtitle(track.Path) && (convert || NeedsScriptInfoRepair(track.Path)))
                 {
                     DetectedEncoding detected = DetectEncoding(track.Path);
                     byte[] raw = File.ReadAllBytes(track.Path);
