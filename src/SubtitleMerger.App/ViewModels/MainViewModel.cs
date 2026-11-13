@@ -26,6 +26,17 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
     private readonly Dictionary<string, JobViewModel> _rows = new(StringComparer.Ordinal);
     private List<JobViewModel> _selected = new();
 
+    /// <summary>日志最多保留的行数（重负载下防止字符串无限增长）。</summary>
+    private const int MaxLogLines = 4000;
+
+    private readonly object _pendingLogGate = new();
+    private readonly Queue<string> _pendingLog = new();
+    private bool _logFlushScheduled;
+    private int _logLineCount;
+
+    private readonly HashSet<string> _dirtyRows = new(StringComparer.Ordinal);
+    private volatile bool _progressFlushScheduled;
+
     private int _uidSeq;
     private string? _ffmpeg;
     private string? _ffprobe;
@@ -292,8 +303,12 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
         if (Directory.Exists(paths[0])) _lastDir = paths[0];
         else if (File.Exists(paths[0])) _lastDir = Path.GetDirectoryName(paths[0]) ?? _lastDir;
 
-        List<string> newVideos = collected.Videos.Where(v => !_videos.Contains(v, StringComparer.Ordinal)).ToList();
-        List<string> newSubs = collected.Subtitles.Where(s => !_subs.Contains(s, StringComparer.Ordinal)).ToList();
+        // 用 HashSet 去重：旧写法每个新文件都要和已存在的全部文件线性比较，
+        // 反复「添加文件夹」时会退化成 O(n²)。
+        var knownVideos = new HashSet<string>(_videos, StringComparer.Ordinal);
+        var knownSubs = new HashSet<string>(_subs, StringComparer.Ordinal);
+        List<string> newVideos = collected.Videos.Where(knownVideos.Add).ToList();
+        List<string> newSubs = collected.Subtitles.Where(knownSubs.Add).ToList();
         _videos.AddRange(newVideos);
         _subs.AddRange(newSubs);
         Log($"添加：视频 {newVideos.Count} 个，字幕 {newSubs.Count} 个");
@@ -390,8 +405,14 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
             Jobs.Add(row);
         }
 
-        CountText = $"视频 {_videos.Count} 个 / 字幕 {_subs.Count} 个 / 未匹配字幕 {matched.Unmatched.Count} 个";
+        int matchedCount = matched.Mapping.Values.Sum(l => l.Count);
+        CountText = $"视频 {_videos.Count} 个 / 字幕 {_subs.Count} 个 / 已匹配 {matchedCount} 个 / 未匹配 {matched.Unmatched.Count} 个";
         StatusText = $"匹配完成，共 {_videos.Count} 个视频";
+        if (matchedCount > 0) Log($"自动匹配：{matchedCount} 份字幕已挂载");
+        if (matched.FuzzyMatches.Count > 0)
+            Log($"有 {matched.FuzzyMatches.Count} 份字幕只能模糊对上（可能是同集的不同语言或版本），未自动挂载：" +
+                string.Join("、", matched.FuzzyMatches.Take(5).Select(f => Path.GetFileName(f.Subtitle)))
+                + (matched.FuzzyMatches.Count > 5 ? " 等" : ""));
         if (matched.Unmatched.Count > 0 && _videos.Count > 0)
             Log($"未匹配的字幕 {matched.Unmatched.Count} 个（可双击视频行手动指定）");
         _ = ProbeJobsAsync();
@@ -401,7 +422,8 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
     {
         string kind = Constants.BitmapSubExts.Contains(Path.GetExtension(path).ToLowerInvariant())
             ? "bitmap" : "text";
-        return new SubTrack(path, lang: NameNormalizer.DetectLangFromName(path), kind: kind);
+        // 1.1：先认 .chs / _en / [cht] 这类明确标记，没有再按字符集猜
+        return new SubTrack(path, lang: NameNormalizer.DetectTypedLang(path), kind: kind);
     }
 
     private string NextUid() => "j" + (++_uidSeq).ToString(CultureInfo.InvariantCulture);
@@ -467,22 +489,35 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
         if (paths.Count == 0) return;
 
         StatusText = $"正在校验字幕文件（{paths.Count} 个）…";
-        using var semaphore = new SemaphoreSlim(Constants.ProbeWorkers);
-        var tasks = paths.Select(async path =>
+        // 有界并发：旧写法一次性为每个字幕创建 Task，几千个大字幕文件会同时
+        // 打开 FileStream 并各起一个超时定时器，句柄/内存一起膨胀。
+        var options = new ParallelOptions
         {
-            await semaphore.WaitAsync();
-            try
+            MaxDegreeOfParallelism = Constants.ProbeWorkers,
+            CancellationToken = _probeCts?.Token ?? CancellationToken.None,
+        };
+        var bag = new System.Collections.Concurrent.ConcurrentBag<(string Path, bool Ok, string Detail)>();
+        try
+        {
+            await Parallel.ForEachAsync(paths, options, async (path, ct) =>
             {
-                (bool Ok, string Detail) = await MediaProbe.ProbeSubtitleAsync(probe, path);
-                return (Path: path, Ok, Detail);
-            }
-            catch
-            {
-                return (Path: path, Ok: true, Detail: "");
-            }
-            finally { semaphore.Release(); }
-        });
-        var results = await Task.WhenAll(tasks);
+                (bool Ok, string Detail) result;
+                try
+                {
+                    result = await MediaProbe.ProbeSubtitleAsync(probe, path).WaitAsync(TimeSpan.FromSeconds(25), ct);
+                }
+                catch
+                {
+                    result = (true, "");
+                }
+                bag.Add((path, result.Ok, result.Detail));
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            return;   // 校验被取消（用户点了停止/关闭窗口），按原样继续
+        }
+        var results = bag.ToList();
         var bad = results.Where(r => !r.Ok)
             .GroupBy(r => r.Path, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.First().Detail, StringComparer.Ordinal);
@@ -639,19 +674,97 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
 
     #region IBatchEvents —— 全部先投递回 UI 线程
 
+    /// <summary>
+    /// 日志入口（可在任意线程调用）。
+    ///
+    /// 重负载下不能「一条一行、每条都重建整段文本、每次都滚动到底」：
+    /// 旧写法是 <c>LogText += ...</c>（每次都复制整段字符串，O(n²) 分配），
+    /// 且 400 个任务并发时每秒会触发上百次完整的 UI 布局 + 滚动到末尾，
+    /// 内存与 UI 线程压力都随任务数线性膨胀，最终可能 OOM 或卡死无响应。
+    /// 现在改为：后台线程只入队，由 UI 定时器每 120 ms 合并一次，
+    /// 日志保留最近 <see cref="MaxLogLines"/> 行，滚动也最多每 120 ms 一次。
+    /// </summary>
     public void Log(string text)
-        => _ui.RunOnUiThread(() =>
+    {
+        string stamp = DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+        bool dispatchNow = false;
+        lock (_pendingLogGate)
         {
-            string stamp = DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
-            LogText += $"[{stamp}] {text}\n";
-            _ui.ScrollLogToEnd();
-        });
+            _pendingLog.Enqueue($"[{stamp}] {text}");
+            // 积压太多时丢掉最早的（例如某个任务一次性输出几百行错误）
+            if (_pendingLog.Count > MaxLogLines) _pendingLog.Dequeue();
+            if (!_logFlushScheduled)
+            {
+                _logFlushScheduled = true;
+                dispatchNow = true;
+            }
+        }
+
+        if (dispatchNow)
+            _ui.RunOnUiThread(DrainLogQueue);
+    }
+
+    /// <summary>把排队的日志一次性并进 <see cref="LogText"/>，顺便裁掉超出上限的旧行。</summary>
+    private void DrainLogQueue()
+    {
+        var batch = new StringBuilder();
+        lock (_pendingLogGate)
+        {
+            while (_pendingLog.Count > 0) batch.Append(_pendingLog.Dequeue()).Append('\n');
+            _logFlushScheduled = false;
+        }
+        if (batch.Length == 0) return;
+
+        _logLineCount += batch.ToString().Count(c => c == '\n');
+        var merged = new StringBuilder(LogText, LogText.Length + batch.Length).Append(batch);
+        if (_logLineCount > MaxLogLines)
+        {
+            // 只保留最后 MaxLogLines 行
+            string text = merged.ToString();
+            int keepFrom = text.Length;
+            int lines = 0;
+            for (int i = text.Length - 1; i >= 0; i--)
+            {
+                if (text[i] == '\n' && ++lines > MaxLogLines) { keepFrom = i + 1; break; }
+            }
+            merged.Clear().Append(keepFrom < text.Length
+                ? "……（更早的日志已省略，仅保留最近 " + MaxLogLines + " 行）\n" + text[keepFrom..]
+                : text);
+            _logLineCount = Math.Min(_logLineCount, MaxLogLines) + 1;
+        }
+        LogText = merged.ToString();
+        _ui.ScrollLogToEnd();
+    }
 
     public void JobUpdate(Job job)
         => _ui.RunOnUiThread(() => { if (_rows.TryGetValue(job.Uid, out var r)) r.Refresh(); });
 
+    /// <summary>
+    /// 进度回调（每个任务每 250 ms 一次）。多任务并发时直接逐条 Refresh 会把 UI 队列刷爆，
+    /// 这里改为「标记脏 + 由同一个 120 ms 定时器统一刷新」，任务再多也只有固定频率的布局。
+    /// </summary>
     public void Progress(Job job)
-        => _ui.RunOnUiThread(() => { if (_rows.TryGetValue(job.Uid, out var r)) r.Refresh(); });
+    {
+        if (_dirtyRows.Count == 0 && !_progressFlushScheduled)
+        {
+            _progressFlushScheduled = true;
+            _ui.RunOnUiThread(FlushProgress);
+        }
+        lock (_dirtyRows) _dirtyRows.Add(job.Uid);
+    }
+
+    private void FlushProgress()
+    {
+        _progressFlushScheduled = false;
+        List<string> uids;
+        lock (_dirtyRows)
+        {
+            uids = _dirtyRows.ToList();
+            _dirtyRows.Clear();
+        }
+        foreach (string uid in uids)
+            if (_rows.TryGetValue(uid, out JobViewModel? row)) row.Refresh();
+    }
 
     public void JobDone(Job job)
         => _ui.RunOnUiThread(() =>
@@ -754,7 +867,12 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
     }
 
     [RelayCommand]
-    private void ClearLog() => LogText = "";
+    private void ClearLog()
+    {
+        lock (_pendingLogGate) _pendingLog.Clear();
+        _logLineCount = 0;
+        LogText = "";
+    }
 
     [RelayCommand]
     private async Task ExportReport()

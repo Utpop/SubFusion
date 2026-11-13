@@ -18,8 +18,15 @@ public static class Constants
     /// <summary>Windows CREATE_NO_WINDOW；.NET 用 ProcessStartInfo.CreateNoWindow = true 等价实现。</summary>
     public const int CreateNoWindow = 0x08000000;
 
-    /// <summary>文件名自动匹配的默认阈值。</summary>
+    /// <summary>
+    /// 文件名自动匹配的默认阈值（0~1）。
+    /// 1.1 起打分改为「标题相似度 0.85 + 令牌重合 0.15」加权，0.72 对应的基本是
+    /// 「除语言/格式标记外文件名完全一致」，与旧版「规范化后完全相等」同一语义。
+    /// </summary>
     public const double DefaultThreshold = 0.72;
+
+    /// <summary>分数落在 [阈值, 阈值 + 本值) 视为「模糊匹配」，不挂载，只提示用户确认。</summary>
+    public const double FuzzyBandWidth = 0.10;
 
     /// <summary>配置文件路径：%USERPROFILE%\.subtitle_merger.json（原 os.path.expanduser("~")）。</summary>
     public static string ConfigPath =>
@@ -82,6 +89,50 @@ public static class Constants
             ["id"] = "ind", ["ind"] = "ind",
             ["tr"] = "tur", ["tur"] = "tur",
         });
+
+    /// <summary>
+    /// 字幕「类型」标记 → 语言码。与 <see cref="LangHints"/> 分开：
+    /// 这些是「这是哪国语言的字幕」的标记，而不是「这是一条字幕」的标记，
+    /// 去掉它们才能让 chs.ass 与 .mkv 规范化后完全一致。
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, string> TypedLangHints =
+        new ReadOnlyDictionary<string, string>(new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["chs"] = "chi", ["cht"] = "chi", ["cn"] = "chi", ["sc"] = "chi", ["tc"] = "chi",
+            ["gb"] = "chi", ["big5"] = "chi", ["zho"] = "chi", ["简"] = "chi", ["繁"] = "chi",
+            ["简体"] = "chi", ["繁體"] = "chi", ["繁体"] = "chi", ["中字"] = "chi",
+            ["eng"] = "eng", ["en"] = "eng", ["english"] = "eng", ["英文"] = "eng", ["英文字幕"] = "eng",
+            ["jpn"] = "jpn", ["ja"] = "jpn", ["jp"] = "jpn", ["japanese"] = "jpn", ["日文"] = "jpn", ["日语"] = "jpn", ["日語"] = "jpn",
+            ["kor"] = "kor", ["ko"] = "kor", ["kr"] = "kor", ["korean"] = "kor", ["韩文"] = "kor", ["韓文"] = "kor", ["韩语"] = "kor",
+            ["chi"] = "chi", ["zh"] = "chi", ["fre"] = "fre", ["fra"] = "fre", ["fr"] = "fre", ["french"] = "fre", ["法文"] = "fre",
+            ["ger"] = "ger", ["deu"] = "ger", ["de"] = "ger", ["german"] = "ger", ["德文"] = "ger",
+            ["spa"] = "spa", ["es"] = "spa", ["spanish"] = "spa", ["西文"] = "spa",
+            ["rus"] = "rus", ["ru"] = "rus", ["russian"] = "rus", ["俄文"] = "rus",
+            ["por"] = "por", ["pt"] = "por", ["ita"] = "ita", ["it"] = "ita", ["italian"] = "ita",
+            ["ara"] = "ara", ["ar"] = "ara", ["arabic"] = "ara", ["tha"] = "tha", ["th"] = "tha", ["泰文"] = "tha",
+            ["vie"] = "vie", ["vi"] = "vie", ["ind"] = "ind", ["id"] = "ind", ["tur"] = "tur", ["tr"] = "tur",
+        });
+
+    /// <summary>
+    /// <see cref="TypedLangHints"/> 的符号形式（.en / _chs / [cht] / .zh-CN. 等）。
+    /// 开头或空白后必须带 . 或 _ 或 -，避免把 "eng" 从 "english" 里截掉；
+    /// 结尾用 (?![a-z]) 而不是 \b，这样 "x.mkv.zh" 这种末尾标记同样命中。
+    /// </summary>
+    public static readonly Regex TypedLangTokenRegex = BuildTypedLangTokenRegex();
+
+    private static Regex BuildTypedLangTokenRegex()
+    {
+        IEnumerable<string> keys = TypedLangHints.Keys
+            .Concat(new[] { "zh-cn", "zh-tw", "zh-hk", "zh-hans", "zh-hant", "pt-br", "en-us", "en-gb" })
+            .Where(k => k.All(c => c < 128))
+            .Select(k => Regex.Escape(k))
+            .Distinct()
+            .OrderByDescending(k => k.Length);
+        string alternation = string.Join("|", keys);
+        // 结尾用 (?![a-z\-])：chs-eng 这种组合标记整体命中，而不是只吃掉前面的 chs
+        return new Regex($@"(?:^|(?<=[\s._\-\[(]))(?:{alternation})(?![a-z]|-?[a-z])",
+                         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    }
 
     /// <summary>语言码 → 显示名（原 LANG_NAMES）。</summary>
     public static readonly IReadOnlyDictionary<string, string> LangNames =
