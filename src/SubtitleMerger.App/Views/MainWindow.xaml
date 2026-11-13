@@ -237,6 +237,13 @@
                             </StackPanel>
                             <CheckBox Content="处理完成后校验输出（核对字幕轨、音轨与时长）"
                                       IsChecked="{Binding Verify, Mode=TwoWay}" />
+
+                            <!-- 破坏性操作：默认关闭，勾选后仍需确认；只有校验通过才会删除原件 -->
+                            <CheckBox Content="合并成功后替换原文件（删除原视频与已合并字幕，不保留 _sub 副本）"
+                                      IsChecked="{Binding ReplaceSource, Mode=TwoWay}" />
+                            <InfoBar Severity="Warning" IsClosable="False" IsOpen="{Binding ReplaceSource}"
+                                     Title="注意：该选项会删除原始文件"
+                                     Message="仅在合并完成且输出校验通过时删除原视频与已合并的字幕；输出沿用原视频文件名。校验失败、改名失败或删除失败都会保留原件。" />
                         </StackPanel>
                     </ScrollViewer>
                 </PivotItem>

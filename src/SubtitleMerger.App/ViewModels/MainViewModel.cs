@@ -99,6 +99,9 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
     [ObservableProperty] private bool keepMetadata = true;
     [ObservableProperty] private bool overwrite = true;
     [ObservableProperty] private bool verify = true;
+
+    /// <summary>合并并通过校验后删除原始视频与已合并字幕，输出沿用原文件名（不加 _sub）。</summary>
+    [ObservableProperty] private bool replaceSource;
     [ObservableProperty] private bool convertEncoding = true;
     [ObservableProperty] private bool recursive = true;
     [ObservableProperty] private double threshold = Constants.DefaultThreshold;
@@ -159,6 +162,7 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
         if (_cfg.Has("convert_encoding") && _cfg.GetBool("convert_encoding") is bool ce) ConvertEncoding = ce;
         if (_cfg.Has("hard_multi") && _cfg.GetBool("hard_multi") is bool hm) HardMulti = hm;
         if (_cfg.Has("verify") && _cfg.GetBool("verify") is bool vf) Verify = vf;
+        if (_cfg.Has("replace_source") && _cfg.GetBool("replace_source") is bool rs) ReplaceSource = rs;
         if (_cfg.Has("recursive") && _cfg.GetBool("recursive") is bool rc) Recursive = rc;
         _lastDir = _cfg.Get("last_dir") ??
                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -185,6 +189,7 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
         _cfg.Set("convert_encoding", ConvertEncoding);
         _cfg.Set("hard_multi", HardMulti);
         _cfg.Set("verify", Verify);
+        _cfg.Set("replace_source", ReplaceSource);
         _cfg.Set("threshold", Threshold.ToString("0.##", CultureInfo.InvariantCulture));
         _cfg.Set("recursive", Recursive);
         _cfg.Set("last_dir", _lastDir);
@@ -595,6 +600,7 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
             ConvertEncoding = ConvertEncoding,
             HardMulti = HardMulti,
             Verify = Verify,
+            ReplaceSource = ReplaceSource,
             Suffix = Suffix?.Trim() ?? "",
             Overwrite = Overwrite,
             OutputDir = OutputDir?.Trim() ?? "",
@@ -636,6 +642,17 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
             return;
         }
         _options = options;
+
+        // 破坏性选项：执行前必须再确认一次（默认关闭，勾了才问）
+        if (options.ReplaceSource)
+        {
+            bool go = await _ui.AskYesNoAsync(
+                "已勾选「合并成功后替换原文件」。\n\n" +
+                "该选项会在合并完成且校验通过后，删除原始视频与已合并的字幕文件，" +
+                "输出沿用原视频文件名（不再保留 _sub 副本）。\n\n" +
+                "删除后无法恢复，确定继续吗？");
+            if (!go) return;
+        }
 
         if (options.Mode == "hard" && _capsChecked && !_caps.Libass)
         {

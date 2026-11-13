@@ -26,9 +26,36 @@ public static class CommandBuilder
         if (string.Equals(Path.GetFullPath(path), Path.GetFullPath(video),
                           StringComparison.OrdinalIgnoreCase))
         {
+            // 替换源文件模式：仍先写到带 _sub 的临时名，等校验通过后再删源、改名，
+            // 这样任何中途失败都不会破坏原视频。
             path = Path.Combine(outDir, stem + (string.IsNullOrEmpty(options.Suffix) ? "_sub" : options.Suffix) + newExt);
         }
         return path;
+    }
+
+    /// <summary>
+    /// 替换源文件模式下，合并结果最终要落到的路径（与源视频同名、同目录）。
+    /// 非替换模式返回 null。
+    /// </summary>
+    public static string? BuildFinalReplacementPath(string video, Options options, string outputDir)
+    {
+        if (!options.ReplaceSource) return null;
+        string outDir = string.IsNullOrEmpty(outputDir)
+            ? (Path.GetDirectoryName(video) ?? "")
+            : outputDir;
+        // 只有输出目录等于源目录时才可能是「原地替换」
+        if (!string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(outDir)),
+                           Path.TrimEndingDirectorySeparator(
+                               Path.GetFullPath(Path.GetDirectoryName(video) ?? "")),
+                           StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        string fileName = Path.GetFileName(video);
+        string stem = Path.GetFileNameWithoutExtension(fileName);
+        string ext = options.Container == "same"
+            ? Path.GetExtension(fileName).ToLowerInvariant()
+            : "." + options.Container;
+        return Path.Combine(outDir, stem + ext);
     }
 
     public static BuildCommandResult BuildCommand(Job job, Options options, string ffmpeg)

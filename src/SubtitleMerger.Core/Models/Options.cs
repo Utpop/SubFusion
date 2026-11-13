@@ -22,5 +22,20 @@ public sealed class Options
     public bool HardMulti { get; set; } = true;           // 硬字幕时是否叠加多个字幕轨
     public bool Verify { get; set; } = true;              // 处理完成后校验输出
 
+    /// <summary>
+    /// 合并并通过校验后，删除原始视频与已合并的字幕文件，只保留合并结果，
+    /// 且输出使用原视频文件名（不加 <c>_sub</c>）。
+    ///
+    /// 安全约束（任一条不满足都只保留原件、不删除）：
+    /// <list type="bullet">
+    /// <item>输出目录必须与源视频目录相同（否则谈不上「替换」）；</item>
+    /// <item>ffmpeg 返回 0 且输出文件存在；</item>
+    /// <item>校验已开启且通过，或校验未开启但文件非空——两者都不满足时不删除；</item>
+    /// <item>删除前先把合并结果改名到最终路径，改名校验失败则回滚。</item>
+    /// </list>
+    /// 默认关闭，避免误删用户素材。
+    /// </summary>
+    public bool ReplaceSource { get; set; }
+
     public Options Clone() => (Options)MemberwiseClone();
 }

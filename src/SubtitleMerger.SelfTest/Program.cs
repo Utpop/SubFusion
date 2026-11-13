@@ -69,6 +69,9 @@ internal static class Program
         Console.WriteLine("=== D. 重负载健壮性 ===");
         await CheckRobustnessAsync();
 
+        Console.WriteLine("=== E. 替换原文件");
+        await CheckReplaceSourceAsync();
+
         Console.WriteLine();
         Console.WriteLine($"通过：{_passed} 项，失败：{Failures.Count} 项");
         foreach (string failure in Failures)
@@ -425,6 +428,117 @@ internal static class Program
             dir = dir.Parent;
         }
         return null;
+    }
+
+    #endregion
+
+    #region E. 替换原文件
+
+    /// <summary>
+    /// 「合并成功后删除原视频与字幕、输出不加 _sub」的三条关键保证：
+    /// 1. 一切正常时，原视频与已合并字幕被删除，结果占用原文件名；
+    /// 2. 输出目录与源目录不同时，绝不删除任何原件；
+    /// 3. 未开启该选项时，行为与旧版一致（保留原件 + _sub 输出）。
+    /// </summary>
+    private static async Task CheckReplaceSourceAsync()
+    {
+        string? ffmpeg = ToolLocator.FindFfmpeg();
+        string? ffprobe = ToolLocator.FindFfprobe();
+        if (string.IsNullOrEmpty(ffmpeg) || string.IsNullOrEmpty(ffprobe))
+        {
+            Console.WriteLine("(未找到 ffmpeg，跳过)");
+            return;
+        }
+
+        string root = Path.Combine(Path.GetTempPath(), "submerge_replace_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string seed = Path.Combine(root, "seed.mp4");
+            ProcessCapture gen = await ProcessUtil.RunAsync(ffmpeg, new[]
+            {
+                "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10",
+                "-f", "lavfi", "-i", "sine=frequency=440",
+                "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", seed,
+            }, 120);
+            if (gen.ExitCode != 0) { Console.WriteLine("(生成测试视频失败，跳过)"); return; }
+
+            string MakeCase(string name)
+            {
+                string dir = Path.Combine(root, name);
+                Directory.CreateDirectory(dir);
+                File.Copy(seed, Path.Combine(dir, "Show.S01E01.mkv"), true);
+                File.WriteAllText(Path.Combine(dir, "Show.S01E01.chs.srt"),
+                    "1\r\n00:00:00,000 --> 00:00:01,000\r\n测试字幕\r\n", new UTF8Encoding(false));
+                return dir;
+            }
+
+            async Task<Job> RunAsync(string dir, bool replace, string? outDir)
+            {
+                var collected = FileCollector.Collect(new[] { dir }, recursive: false);
+                var match = SubtitleMatcher.Match(collected.Videos, collected.Subtitles, 0.72);
+                string video = collected.Videos[0];
+                var tracks = match.Mapping[video]
+                    .Select(p => new SubTrack(p, lang: "chi") { Default = true }).ToList();
+                var job = new Job(video, tracks);
+                MediaInfo info = await MediaProbe.ProbeStreamsAsync(ffprobe, video);
+                job.Info = info;
+                job.Duration = info.Duration;
+
+                await new BatchProcessor(new Collector()).RunAsync(new BatchRequest
+                {
+                    Options = new Options
+                    {
+                        Container = "mkv", Mode = "soft", Vcodec = "copy", Acodec = "copy",
+                        OutputDir = outDir ?? dir, Verify = true, Workers = 1,
+                        ConvertEncoding = true, ReplaceSource = replace, KeepExistingSubs = true,
+                    },
+                    Ffmpeg = ffmpeg, Ffprobe = ffprobe, Jobs = new[] { job },
+                    TempDir = Path.Combine(root, "tmp"),
+                }, CancellationToken.None);
+                return job;
+            }
+
+            // 1) 正常替换
+            string dirA = MakeCase("caseA");
+            Job jobA = await RunAsync(dirA, replace: true, outDir: null);
+            Check("替换：任务完成且校验通过",
+                  jobA.State == Job.StateDone && jobA.VerifyOk == true,
+                  $"state={jobA.State} verify={jobA.VerifyOk}");
+            Check("替换：原字幕已删除",
+                  !File.Exists(Path.Combine(dirA, "Show.S01E01.chs.srt")));
+            Check("替换：结果占用原视频文件名",
+                  File.Exists(Path.Combine(dirA, "Show.S01E01.mkv")));
+            Check("替换：不残留 _sub 输出",
+                  !File.Exists(Path.Combine(dirA, "Show.S01E01_sub.mkv")));
+            Check("替换：Output 指向最终路径",
+                  string.Equals(Path.GetFileName(jobA.Output), "Show.S01E01.mkv", StringComparison.OrdinalIgnoreCase),
+                  jobA.Output);
+
+            // 2) 输出目录不同 -> 不删
+            string dirB = MakeCase("caseB");
+            string outB = Path.Combine(root, "caseB_out");
+            Directory.CreateDirectory(outB);
+            await RunAsync(dirB, replace: true, outDir: outB);
+            Check("替换：输出目录不同则保留原视频",
+                  File.Exists(Path.Combine(dirB, "Show.S01E01.mkv")));
+            Check("替换：输出目录不同则保留原字幕",
+                  File.Exists(Path.Combine(dirB, "Show.S01E01.chs.srt")));
+
+            // 3) 未开启 -> 旧行为
+            string dirC = MakeCase("caseC");
+            Job jobC = await RunAsync(dirC, replace: false, outDir: null);
+            Check("替换：未开启时保留原视频", File.Exists(Path.Combine(dirC, "Show.S01E01.mkv")));
+            Check("替换：未开启时保留原字幕", File.Exists(Path.Combine(dirC, "Show.S01E01.chs.srt")));
+            Check("替换：未开启时输出为 _sub",
+                  string.Equals(Path.GetFileName(jobC.Output), "Show.S01E01_sub.mkv", StringComparison.OrdinalIgnoreCase),
+                  jobC.Output);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* 忽略 */ }
+        }
     }
 
     #endregion

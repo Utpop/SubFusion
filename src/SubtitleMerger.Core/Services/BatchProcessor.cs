@@ -279,6 +279,10 @@ public sealed class BatchProcessor
                     foreach (string issue in verified.Issues)
                         _events.Log($"[校验] {job.Name}：{issue}");
             }
+
+            // 替换源文件：只有「合并成功 + 校验通过」才删除原件。
+            if (options.ReplaceSource)
+                ApplySourceReplacement(job, options, request, built);
         }
         else
         {
@@ -294,5 +298,117 @@ public sealed class BatchProcessor
             if (logLines.Count == 0)
                 _events.Log($"[错误] {job.Name}：ffmpeg 没有输出错误信息");
         }
+    }
+
+    /// <summary>
+    /// 「合并成功后替换源文件」：删除原视频与已合并的字幕，把结果改名为原视频文件名（不加 _sub）。
+    ///
+    /// 这是破坏性操作，按下面的顺序做，任何一步不满足就放弃删除、保留全部原件：
+    /// 1. 输出目录必须就是源目录（否则不是替换场景）；
+    /// 2. 合并结果必须存在且非空；
+    /// 3. 校验必须通过（开启校验时 Ok 必须为 true；未开启校验时要求体积达标）；
+    /// 4. 先把结果改名到最终路径，成功后再删原件；删源失败则回滚改名。
+    /// </summary>
+    private void ApplySourceReplacement(Job job, Options options, BatchRequest request, BuildCommandResult built)
+    {
+        string? finalPath = CommandBuilder.BuildFinalReplacementPath(job.Video, options, options.OutputDir);
+        if (finalPath is null)
+        {
+            _events.Log($"[保留] {job.Name}：输出目录与源目录不同，不执行替换删除");
+            return;
+        }
+
+        long size;
+        try { size = new FileInfo(job.Output).Length; }
+        catch { size = 0; }
+        if (size <= 0)
+        {
+            _events.Log($"[保留] {job.Name}：合并结果为空，未删除原件");
+            return;
+        }
+
+        // 校验门禁：开启校验时必须明确通过；未开启时用「体积不小于源文件 50%」兜底
+        if (options.Verify)
+        {
+            if (job.VerifyOk != true)
+            {
+                _events.Log($"[保留] {job.Name}：输出校验未通过，未删除原件");
+                return;
+            }
+        }
+        else if (job.Info.Size > 0 && size < job.Info.Size * 0.5)
+        {
+            _events.Log($"[保留] {job.Name}：输出体积明显偏小，未删除原件");
+            return;
+        }
+
+        // 结果与源文件同名时无需改名（BuildOutputPath 已保证不会写进源文件路径）。
+        // 注意顺序：必须先删除原视频，再把合并结果改名到原路径；
+        // 反过来（先改名覆盖、再删源）会把刚生成的结果当成源文件删掉。
+        bool samePath = string.Equals(Path.GetFullPath(finalPath), Path.GetFullPath(job.Output),
+                                      StringComparison.OrdinalIgnoreCase);
+
+        // 收集要删除的字幕：只删「本次确实合并进去」的原始字幕文件（不是临时副本）
+        var subToDelete = new List<string>();
+        foreach (SubTrack track in job.Subs.Where(t => t.Enabled))
+        {
+            string path = track.Path;
+            if (path.EndsWith("_utf8" + Path.GetExtension(path), StringComparison.OrdinalIgnoreCase)) continue;
+            if (!File.Exists(path)) continue;
+            // 只删与视频同目录的字幕，避免误删其它位置的文件
+            string? dir = Path.GetDirectoryName(path);
+            string? videoDir = Path.GetDirectoryName(job.Video);
+            if (dir is null || videoDir is null) continue;
+            if (!string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(dir)),
+                               Path.TrimEndingDirectorySeparator(Path.GetFullPath(videoDir)),
+                               StringComparison.OrdinalIgnoreCase)) continue;
+            subToDelete.Add(path);
+        }
+
+        var failures = new List<string>();
+
+        // 1) 先删原视频（若与最终路径不同名，它此刻仍独立存在）
+        if (!samePath)
+        {
+            try { File.Delete(job.Video); }
+            catch (Exception ex) { failures.Add($"视频：{ex.Message}"); }
+        }
+
+        // 2) 删源失败就整体放弃，保留 _sub 结果，不动原件
+        if (failures.Count > 0)
+        {
+            _events.Log($"[保留] {job.Name}：删除原视频失败（{string.Join("；", failures)}），已保留原件与 _sub 输出");
+            return;
+        }
+
+        // 3) 把合并结果改名到最终路径
+        if (!samePath)
+        {
+            try
+            {
+                File.Move(job.Output, finalPath, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                _events.Log($"[保留] {job.Name}：改名失败（{ex.Message}），结果仍为 {Path.GetFileName(job.Output)}");
+                return;
+            }
+        }
+
+        // 4) 删除已合并的原始字幕
+        foreach (string path in subToDelete)
+        {
+            try { File.Delete(path); }
+            catch (Exception ex) { failures.Add($"{Path.GetFileName(path)}：{ex.Message}"); }
+        }
+
+        if (failures.Count > 0)
+            _events.Log($"[提示] {job.Name}：以下字幕未能删除（{string.Join("；", failures)}），需要时请手动清理");
+
+        job.Output = finalPath;
+        if (subToDelete.Count > 0)
+            _events.Log($"[替换] {job.Name}：已删除原视频与 {subToDelete.Count} 个字幕，保留 {Path.GetFileName(finalPath)}");
+        else
+            _events.Log($"[替换] {job.Name}：已删除原视频，保留 {Path.GetFileName(finalPath)}");
     }
 }
