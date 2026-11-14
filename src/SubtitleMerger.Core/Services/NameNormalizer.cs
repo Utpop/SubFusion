@@ -196,7 +196,6 @@ public static class NameNormalizer
         if (extDot > 0) name = name[..extDot];
         string typedLang = "und";
         bool stripped = false;
-        bool episodeSeenThisName = Regex.IsMatch(name, @"(?i)(?<![a-z0-9])(s\d{1,2}e\d{1,4}|e\d{1,4}|ep\d{1,4})(?![a-z0-9])");
 
         // 1) 先剥末尾的点分语言段（Name.mkv.zh.srt → "Name.mkv.zh" → "Name.mkv"），最多 3 段
         bool peeled;
@@ -234,9 +233,8 @@ public static class NameNormalizer
                 continue;
             }
             string digits = new(key.Where(char.IsAsciiDigit).ToArray());
-            // 「前置词 + 数字」的点分段（Anime.Episode.01 → "." + "Episode" + ".01"）：把序号留下再剥。
-            // 只在没有 SxxEyy / 第N集 这类现成契约时才做，免得把 S01.E02 改成重复的 E01E02。
-            // 单字母 e/s 必须整词匹配（上面的 [a-z] 前瞻），否则 "BluRay.x264-GRP" 里的 e 会被当成集数
+            // 「前置词 + 数字」的点分段（Anime.Episode.01 → "Episode.01"）：把序号留在同一段里。
+            // 单字母 e/s 必须整词匹配（上面的 [a-z] 前瞻），否则 "BluRay.x264-GRP" 里的 e 会被当成集数。
             const string EpisodeWords =
                 "(?<![a-z])(?:episode|volume|season|chapter|part|ova|ep|vol|pt|ch|sp|e|s)(?![a-z])";
             var pair = Regex.Match(name, $@"(?:^|\.)({EpisodeWords})\.([0-9]{{1,3}})$", RegexOptions.IgnoreCase);
@@ -255,8 +253,6 @@ public static class NameNormalizer
             {
                 break;
             }
-            episodeSeenThisName = Regex.IsMatch(name, @"(?i)(s\d{1,2})?e\d{1,4}|(?<![a-z])ep\d{1,4}",
-                                                RegexOptions.CultureInvariant);
         }
 
         name = StripTaskMarkers(name);

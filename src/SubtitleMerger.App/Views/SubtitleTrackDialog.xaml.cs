@@ -41,8 +41,9 @@ public sealed partial class SubtitleTrackDialog : ContentDialog
         CandidateList.ItemsSource = _candidatePaths;
         SelectedList.ItemsSource = _trackLabels;
 
-        LangCombo.ItemsSource = Constants.LangChoices
-            .Select(c => $"{c.Code}  {c.Name}").ToList();
+        LangCombo.Items.Clear();
+        foreach (string choice in Constants.LangChoices.Select(c => $"{c.Code}  {c.Name}"))
+            LangCombo.Items.Add(choice);
 
         foreach (SubTrack track in current) _tracks.Add(track.Clone());
         RefreshSelected();
@@ -55,7 +56,7 @@ public sealed partial class SubtitleTrackDialog : ContentDialog
         string kind = Constants.BitmapSubExts.Contains(Path.GetExtension(path).ToLowerInvariant())
             ? "bitmap" : "text";
         _tracks.Add(new SubTrack(path,
-            lang: NameNormalizer.DetectLangFromName(path),
+            lang: NameNormalizer.DetectTypedLang(path),
             kind: kind,
             @default: _tracks.Count == 0));
     }
@@ -87,12 +88,22 @@ public sealed partial class SubtitleTrackDialog : ContentDialog
         bool old = _suppress;
         _suppress = true;
         string label = $"{track.Lang}  {(Constants.LangNames.TryGetValue(track.Lang, out var n) ? n : track.Lang)}";
-        foreach (object? value in LangCombo.Items)
+        int comboIndex = -1;
+        for (int i = 0; i < LangCombo.Items.Count; i++)
         {
-            string text = value as string ?? "";
-            if (text.StartsWith(track.Lang + " ", StringComparison.Ordinal)) { label = text; break; }
+            string text = LangCombo.Items[i] as string ?? "";
+            if (text.StartsWith(track.Lang + " ", StringComparison.Ordinal))
+            {
+                comboIndex = i;
+                break;
+            }
         }
-        LangCombo.SelectedItem = label;
+        if (comboIndex < 0)
+        {
+            LangCombo.Items.Add(label);
+            comboIndex = LangCombo.Items.Count - 1;
+        }
+        LangCombo.SelectedIndex = comboIndex;
         TitleBox.Text = track.Title;
         DefaultCheck.IsChecked = track.Default;
         ForcedCheck.IsChecked = track.Forced;

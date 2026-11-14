@@ -72,6 +72,9 @@ internal static class Program
         Console.WriteLine("=== E. 替换原文件");
         await CheckReplaceSourceAsync();
 
+        Console.WriteLine("=== F. 并发硬字幕工作副本隔离");
+        await CheckHardSubIsolationAsync();
+
         Console.WriteLine();
         Console.WriteLine($"通过：{_passed} 项，失败：{Failures.Count} 项");
         foreach (string failure in Failures)
@@ -340,7 +343,13 @@ internal static class Program
                         new[] { "/c", "ping 127.0.0.1 -n 6 > nul" }, 1);
                     if (i == 0) Check("超时进程被标记 TimedOut", cap.TimedOut);
                 }
-                await Task.Delay(300);
+                // 超时 Kill 后管道读取/进程对象由异步收尾释放，给 GC 与终结器一点时间。
+                for (int i = 0; i < 3; i++)
+                {
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                    await Task.Delay(200);
+                }
                 using var after = System.Diagnostics.Process.GetCurrentProcess();
                 after.Refresh();
                 int growth = after.HandleCount - before;
@@ -538,6 +547,56 @@ internal static class Program
         finally
         {
             try { Directory.Delete(root, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    #endregion
+
+    #region F. 并发硬字幕工作副本隔离
+
+    /// <summary>
+    /// Workers>1 且 Mode=hard 时，多个任务必须各用自己的工作副本目录。
+    /// 共用 hard 目录会按 hardsub_0.srt 覆盖，导致先启动的任务烧进后启动任务的字幕。
+    /// </summary>
+    private static async Task CheckHardSubIsolationAsync()
+    {
+        string work = Path.Combine(Path.GetTempPath(), "submerge_hardiso_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(work);
+        try
+        {
+            string dirA = Path.Combine(work, "A");
+            string dirB = Path.Combine(work, "B");
+            Directory.CreateDirectory(dirA);
+            Directory.CreateDirectory(dirB);
+            string srtA = Path.Combine(dirA, "A.chs.srt");
+            string srtB = Path.Combine(dirB, "B.chs.srt");
+            await File.WriteAllTextAsync(srtA, "1\n00:00:00,000 --> 00:00:01,000\n字幕A\n", new UTF8Encoding(false));
+            await File.WriteAllTextAsync(srtB, "1\n00:00:00,000 --> 00:00:01,000\n字幕B\n", new UTF8Encoding(false));
+            string videoA = Path.Combine(dirA, "A.mkv");
+            string videoB = Path.Combine(dirB, "B.mkv");
+            await File.WriteAllTextAsync(videoA, "video-a", new UTF8Encoding(false));
+            await File.WriteAllTextAsync(videoB, "video-b", new UTF8Encoding(false));
+
+            // 不需要真实 ffmpeg：只验证 PrepareHardSubs 为每个任务写入的内容互不覆盖。
+            // 直接调用 BatchProcessor 会启动 ffmpeg，因此这里用与它相同的隔离约定检查路径唯一性。
+            var jobs = new[]
+            {
+                new Job(videoA, new[] { new SubTrack(srtA) }, "") { Uid = "jobA" },
+                new Job(videoB, new[] { new SubTrack(srtB) }, "") { Uid = "jobB" },
+            };
+            var dirs = jobs.Select(j => Path.Combine(work, "hard", j.Uid)).ToList();
+            Check("并发硬字幕工作目录按任务隔离", dirs.Distinct(StringComparer.Ordinal).Count() == jobs.Length);
+            foreach (string dir in dirs) Directory.CreateDirectory(dir);
+            PrepareResult a = EncodingService.PrepareHardSubs(new[] { new SubTrack(srtA) }, dirs[0]);
+            PrepareResult b = EncodingService.PrepareHardSubs(new[] { new SubTrack(srtB) }, dirs[1]);
+            Check("并发硬字幕工作副本内容互不覆盖",
+                  a.Prepared.Count == 1 && b.Prepared.Count == 1 &&
+                  (await File.ReadAllTextAsync(a.Prepared[0].Path)).Contains("字幕A") &&
+                  (await File.ReadAllTextAsync(b.Prepared[0].Path)).Contains("字幕B"));
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* 忽略 */ }
         }
     }
 

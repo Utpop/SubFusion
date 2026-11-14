@@ -35,7 +35,7 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
     private int _logLineCount;
 
     private readonly HashSet<string> _dirtyRows = new(StringComparer.Ordinal);
-    private volatile bool _progressFlushScheduled;
+    private bool _progressFlushScheduled;
     // 日志镜像默认关闭：仅当设置环境变量 SUBMERGE_LOG=1 时写 %TEMP%\subtitle_merger_gui.log。
     // （曾用于排查管理员权限崩溃；若常开会在批量处理时每条日志都同步写盘，明显拖慢界面。）
     private static readonly bool _mirrorLog =
@@ -50,8 +50,9 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
     private string _lastDir = "";
     private string _lastOutputDir = "";
     private long _probeGeneration;
-    private CancellationTokenSource? _probeCts;
+    private readonly HashSet<CancellationTokenSource> _probeSources = new();
     private CancellationTokenSource? _cancel;
+    private Task? _batchTask;
     private string? _tempDir;
     private Options _options = new();
     private int _doneCount;
@@ -68,6 +69,13 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
 
     private static string? FirstNonEmpty(string? configured, string? located)
         => !string.IsNullOrEmpty(configured) ? configured : located;
+
+    private static void SafeCancel(CancellationTokenSource? cts)
+    {
+        if (cts is null) return;
+        try { cts.Cancel(); }
+        catch (ObjectDisposedException) { /* 任务刚收尾并已释放 */ }
+    }
 
     #region 可绑定集合与选项
 
@@ -445,22 +453,37 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
     private async Task ProbeJobsAsync(bool onlyMissing = true)
     {
         if (string.IsNullOrEmpty(_ffprobe) || _jobs.Count == 0) return;
-        List<Job> targets = _jobs.Where(j => !onlyMissing || j.Duration is null).ToList();
+        List<Job> targets = _jobs.Where(j => !onlyMissing || j.Duration is null || !j.Info.Probed).ToList();
         if (targets.Count == 0) return;
 
-        _probeCts?.Cancel();
+        // 只取消上一轮：它仍在收尾，必须等自己的 finally 才能 Dispose。
+        // 复制一份再 Cancel，避免回调线程在锁内与集合修改交错。
+        CancellationTokenSource[] oldSources;
+        lock (_probeSources) oldSources = _probeSources.ToArray();
+        foreach (CancellationTokenSource old in oldSources) SafeCancel(old);
         var cts = new CancellationTokenSource();
-        _probeCts = cts;
+        lock (_probeSources) _probeSources.Add(cts);
         long generation = ++_probeGeneration;
 
-        var byPath = targets.ToDictionary(j => j.Video, j => j.Uid, StringComparer.Ordinal);
-        await MediaProbe.ProbeManyAsync(_ffprobe, byPath.Keys, Constants.ProbeWorkers,
-            (path, info) =>
-            {
-                if (generation != _probeGeneration) return;
-                if (!byPath.TryGetValue(path, out string? uid)) return;
-                _ui.RunOnUiThread(() => OnProbe(uid, info));
-            }, cts.Token);
+        // 同一个视频被重复添加时 ToDictionary 会直接抛异常并让 Rematch 的 fire-and-forget
+        // 任务失败；去重后行为与 Python 版「按路径字典收集」一致。
+        var byPath = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (Job target in targets) byPath[target.Video] = target.Uid;
+        try
+        {
+            await MediaProbe.ProbeManyAsync(_ffprobe, byPath.Keys, Constants.ProbeWorkers,
+                (path, info) =>
+                {
+                    if (generation != _probeGeneration) return;
+                    if (!byPath.TryGetValue(path, out string? uid)) return;
+                    _ui.RunOnUiThread(() => OnProbe(uid, info));
+                }, cts.Token);
+        }
+        finally
+        {
+            lock (_probeSources) _probeSources.Remove(cts);
+            cts.Dispose();
+        }
     }
 
     private void OnProbe(string uid, MediaInfo info)
@@ -501,10 +524,11 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
         StatusText = $"正在校验字幕文件（{paths.Count} 个）…";
         // 有界并发：旧写法一次性为每个字幕创建 Task，几千个大字幕文件会同时
         // 打开 FileStream 并各起一个超时定时器，句柄/内存一起膨胀。
+        CancellationToken validationToken = _cancel?.Token ?? CancellationToken.None;
         var options = new ParallelOptions
         {
             MaxDegreeOfParallelism = Constants.ProbeWorkers,
-            CancellationToken = _probeCts?.Token ?? CancellationToken.None,
+            CancellationToken = validationToken,
         };
         var bag = new System.Collections.Concurrent.ConcurrentBag<(string Path, bool Ok, string Detail)>();
         try
@@ -661,19 +685,41 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
             if (!go) return;
         }
 
-        await EnsureProbedAsync(_jobs);
-        await DropInvalidSubsAsync();
+        // 先建本轮取消源：字幕有效性校验也要响应「停止 / 关闭」，
+        // 不能沿用上一轮探测的令牌（那时 _cancel 尚未创建）。
+        _cancel?.Dispose();
+        _cancel = new CancellationTokenSource();
+        CancellationToken batchToken = _cancel.Token;
+
+        try
+        {
+            await EnsureProbedAsync(_jobs);
+            await DropInvalidSubsAsync();
+        }
+        catch (Exception ex)
+        {
+            await _ui.ShowErrorAsync($"处理前检查失败：{ex.Message}");
+            _cancel.Dispose(); _cancel = null;
+            return;
+        }
+        if (batchToken.IsCancellationRequested) { _cancel.Dispose(); _cancel = null; return; }
 
         try { Directory.CreateDirectory(options.OutputDir); }
         catch (Exception ex)
         {
             await _ui.ShowErrorAsync($"无法创建输出目录：{ex.Message}");
+            _cancel.Dispose(); _cancel = null;
             return;
         }
 
         _tempDir = Path.Combine(Path.GetTempPath(), "submerge_" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_tempDir);
-        _cancel = new CancellationTokenSource();
+        try { Directory.CreateDirectory(_tempDir); }
+        catch (Exception ex)
+        {
+            await _ui.ShowErrorAsync($"无法创建临时目录：{ex.Message}");
+            _cancel.Dispose(); _cancel = null;
+            return;
+        }
         IsRunning = true;
         CanStop = true;
         OverallMaximum = _jobs.Count;
@@ -682,14 +728,27 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
         StatusText = $"开始处理 {_jobs.Count} 个视频...";
 
         var processor = new BatchProcessor(this);
-        await processor.RunAsync(new BatchRequest
+        _batchTask = processor.RunAsync(new BatchRequest
         {
             Options = options,
             Ffmpeg = ffmpeg,
             Ffprobe = _ffprobe,
             Jobs = _jobs.ToList(),
             TempDir = _tempDir,
-        }, _cancel.Token);
+        }, batchToken);
+        try
+        {
+            await _batchTask;
+        }
+        finally
+        {
+            // AllDone 是投递到 UI 队列的回调，可能晚于本方法返回才执行；
+            // 资源收尾放到这里才是确定性的（关闭窗口时也不会漏）。
+            CleanupTemp();
+            _batchTask = null;
+            _cancel?.Dispose();
+            _cancel = null;
+        }
     }
 
     [RelayCommand]
@@ -787,17 +846,19 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
     /// </summary>
     public void Progress(Job job)
     {
-        if (_dirtyRows.Count == 0 && !_progressFlushScheduled)
+        bool dispatchNow;
+        lock (_dirtyRows)
         {
-            _progressFlushScheduled = true;
-            _ui.RunOnUiThread(FlushProgress);
+            _dirtyRows.Add(job.Uid);
+            dispatchNow = !_progressFlushScheduled;
+            if (dispatchNow) _progressFlushScheduled = true;
         }
-        lock (_dirtyRows) _dirtyRows.Add(job.Uid);
+        if (dispatchNow) _ui.RunOnUiThread(FlushProgress);
     }
 
     private void FlushProgress()
     {
-        _progressFlushScheduled = false;
+        lock (_dirtyRows) _progressFlushScheduled = false;
         List<string> uids;
         lock (_dirtyRows)
         {
@@ -846,7 +907,6 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
             Log($"全部结束：完成 {summary.Done}，失败 {summary.Failed}，跳过 {summary.Skipped}，取消 {summary.Cancelled}，总用时 {total}");
             if (summary.Warned > 0)
                 Log($"注意：{summary.Warned} 个输出文件校验异常，详见上方 [校验异常] 行");
-            CleanupTemp();
             _lastOutputDir = summary.OutputDir;
         });
 
@@ -911,7 +971,11 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
     [RelayCommand]
     private void ClearLog()
     {
-        lock (_pendingLogGate) _pendingLog.Clear();
+        lock (_pendingLogGate)
+        {
+            _pendingLog.Clear();
+            _logFlushScheduled = false;
+        }
         _logLineCount = 0;
         LogText = "";
     }
@@ -1001,9 +1065,17 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
             bool yes = await _ui.AskYesNoAsync("正在处理中，确定退出吗？");
             if (!yes) return false;
             _cancel?.Cancel();
+            // 关闭窗口前等批量任务真正收尾：否则 AllDone 还没销毁临时目录/CTS，
+            // 进程就已经退出，后台 ffmpeg 子进程会残留。
+            if (_batchTask is not null)
+            {
+                try { await _batchTask; } catch { /* RunAsync 内部已通过 Fatal 记录 */ }
+            }
         }
         _closing = true;
-        _probeCts?.Cancel();
+        CancellationTokenSource[] oldSources;
+        lock (_probeSources) oldSources = _probeSources.ToArray();
+        foreach (CancellationTokenSource cts in oldSources) SafeCancel(cts);
         CleanupTemp();
         EncodingService.ClearUtf8Cache();
         SaveConfig();

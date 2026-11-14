@@ -18,6 +18,7 @@ internal static class CrashGuard
 {
     private const string FileName = "subtitle_merger_crash.txt";
     private static readonly object Gate = new();
+    private static ExceptionFilter? _serhFilter;
     private static bool _installed;
 
     public static string LogPath => Path.Combine(Path.GetTempPath(), FileName);
@@ -44,7 +45,10 @@ internal static class CrashGuard
 
         try
         {
-            SetUnhandledExceptionFilter(OnSerh);
+            // 委托必须长期持有：GetFunctionPointer 形式的 SEH 回调一旦被 GC 回收，
+            // 非托管异常发生时就会跳到已释放的 thunk。
+            _serhFilter = OnSerh;
+            SetUnhandledExceptionFilter(_serhFilter);
         }
         catch { /* 部分受限环境不允许安装过滤器，忽略 */ }
     }
@@ -122,7 +126,11 @@ internal static class CrashGuard
     private static Exception ExceptionFromPointers(IntPtr pointers)
     {
         if (pointers == IntPtr.Zero) return new Exception("未知的非托管异常");
-        var er = Marshal.PtrToStructure<ExceptionRecord>(pointers);
+        // SetUnhandledExceptionFilter 收到的是 EXCEPTION_POINTERS*，其第一个字段
+        // 才指向 EXCEPTION_RECORD；直接把 EXCEPTION_POINTERS 当记录读会拿到无意义的异常码。
+        var ep = Marshal.PtrToStructure<ExceptionPointers>(pointers);
+        if (ep.ExceptionRecord == IntPtr.Zero) return new Exception("未知的非托管异常");
+        var er = Marshal.PtrToStructure<ExceptionRecord>(ep.ExceptionRecord);
         return new Exception($"非托管异常 0x{er.Code:X8} at 0x{er.Address.ToInt64():X} " +
                              $"{DescribeSeverity(er.Code)}");
     }
@@ -137,6 +145,13 @@ internal static class CrashGuard
     };
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct ExceptionPointers
+    {
+        public IntPtr ExceptionRecord;
+        public IntPtr ContextRecord;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct ExceptionRecord
     {
         public uint Code;
@@ -144,7 +159,7 @@ internal static class CrashGuard
         public IntPtr Record;
         public IntPtr Address;
         public uint NumberParameters;
-        public IntPtr Pad;
+        public uint Unused;
         public IntPtr Info0;
         public IntPtr Info1;
         public IntPtr Info2;

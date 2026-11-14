@@ -78,6 +78,11 @@ public sealed class BatchProcessor
     private static void ResetJob(Job job, BatchRequest request)
     {
         job.State = Job.StatePending;
+        job.Size = null;
+        job.VerifyOk = null;
+        job.VerifyIssues = new List<string>();
+        job.StartedAt = null;
+        job.FinishedAt = null;
         job.Progress = 0.0;
         job.Speed = "";
         job.Eta = "";
@@ -122,6 +127,7 @@ public sealed class BatchProcessor
                 {
                     captured.State = Job.StateFailed;
                     captured.Message = Formatting.Truncate(ex.Message, 200);
+                    captured.FinishedAt ??= Formatting.UnixNow();
                 }
                 finally
                 {
@@ -155,6 +161,7 @@ public sealed class BatchProcessor
         if (cancellationToken.IsCancellationRequested)
         {
             job.State = Job.StateCancelled;
+            job.FinishedAt ??= Formatting.UnixNow();
             return;
         }
 
@@ -180,7 +187,10 @@ public sealed class BatchProcessor
         List<SubTrack> prepared;
         if (options.Mode == "hard")
         {
-            string hardDir = Path.Combine(request.TempDir, "hard");
+            // 多个硬字幕任务并发时，共用一个 hard 目录会让 hardsub_0.srt 互相覆盖：
+            // 后写入的任务会把前面任务即将烧录的字幕内容换掉。按任务隔离工作副本。
+            string hardDir = Path.Combine(request.TempDir, "hard",
+                string.IsNullOrEmpty(job.Uid) ? "job" + Guid.NewGuid().ToString("N") : job.Uid);
             PrepareResult pr = EncodingService.PrepareHardSubs(enabled, hardDir, options.ConvertEncoding);
             cwd = hardDir;
             foreach (HardSubFailure failure in pr.Failed)

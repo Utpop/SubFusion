@@ -62,10 +62,15 @@ public static class ProcessUtil
         {
             Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
             Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+            // 即使 2 秒收尾窗口已过，也要在后台观察两条读取任务的异常，
+            // 否则被 Kill 打断的管道读取会留下未观察的 Task 异常。
+            Observe(stdoutTask);
+            Observe(stderrTask);
 
             try
             {
                 Task waitTask = process.WaitForExitAsync(cancellationToken);
+                Observe(waitTask);
                 Task timeoutTask = Task.Delay(TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
                 Task winner = await Task.WhenAny(waitTask, timeoutTask).ConfigureAwait(false);
                 if (winner == timeoutTask)
@@ -74,7 +79,9 @@ public static class ProcessUtil
                     await SettleAsync(waitTask, stdoutTask, stderrTask).ConfigureAwait(false);
                     return new ProcessCapture(-1, "", "", true);
                 }
-                await waitTask.ConfigureAwait(false);
+                // 进程退出后，两条管道读取任务可能还在收尾；不等它们完成就离开
+                // using 会 Dispose 仍在读的流，超时子进程残留句柄会线性累积。
+                await SettleAsync(waitTask, stdoutTask, stderrTask).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -108,12 +115,12 @@ public static class ProcessUtil
     }
 
     /// <summary>收尾：等进程退出与两条输出流读取结束，各最多等 2 秒，保证句柄释放。</summary>
+    private static void Observe(Task task)
+        => _ = task.ContinueWith(static t => _ = t.Exception, TaskScheduler.Default);
+
     private static async Task SettleAsync(Task? waitTask, Task stdoutTask, Task stderrTask)
     {
-        Task all = Task.WhenAll(
-            waitTask ?? Task.CompletedTask,
-            stdoutTask.ContinueWith(static t => _ = t.Exception, TaskScheduler.Default),
-            stderrTask.ContinueWith(static t => _ = t.Exception, TaskScheduler.Default));
+        Task all = Task.WhenAll(waitTask ?? Task.CompletedTask, stdoutTask, stderrTask);
         await Task.WhenAny(all, Task.Delay(2000)).ConfigureAwait(false);
     }
 
