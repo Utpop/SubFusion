@@ -42,9 +42,11 @@
   <!--
     WinUI 3 的 XAML 编译产物（.xbf）与资源索引（.pri）默认只进入 build 输出，
     dotnet publish 不会自动带上，导致发布目录里的 exe 因资源缺失而启动失败。
-    这里显式把它们加入发布文件清单（路径与 build 输出保持一致）。
+    目录发布（默认）时显式补上；单文件发布时这些资源由 EnableMsixTooling
+    生成的嵌入版 resources.pri 承载，再复制一份反而会让发布目录残留外部文件。
   -->
-  <Target Name="IncludeXamlArtifactsInPublish" AfterTargets="ComputeFilesToPublish">
+  <Target Name="IncludeXamlArtifactsInPublish" AfterTargets="ComputeFilesToPublish"
+          Condition="'$(PublishSingleFile)' != 'true'">
     <ItemGroup>
       <ResolvedFileToPublish Include="$(TargetDir)App.xbf"
                              RelativePath="App.xbf" CopyToPublishDirectory="PreserveNewest" />

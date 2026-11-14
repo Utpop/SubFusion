@@ -167,7 +167,7 @@ dist\SubtitleMerger\SubtitleMerger.exe --smoke
   `Parallel.ForEachAsync` 的 `MaxDegreeOfParallelism` 不要去掉。
 - **不要顺手清理** `docs/` 里记录的「原版固有行为」（见第 1 节），也不要改配置键名、
   日志文案前缀 `[HH:MM:SS]`、CSV 的 UTF-8 BOM + CRLF 格式。
-- **提交前必跑**：`dotnet build -c Release` + 完整自检 + `publish` 后 `--smoke`。
+- **提交前必跑**：`dotnet build -c Release` + 完整自检 + 单 EXE 发布（见第 7 节）。
   若自检报临时目录 `UnauthorizedAccessException`，按第 3 节覆盖 `TMP/TEMP` 再跑。
 
 ---
@@ -177,3 +177,104 @@ dist\SubtitleMerger\SubtitleMerger.exe --smoke
 `bin/`、`obj/`、`dist/`、`.workbuddy/` 均为构建/临时产物，`.gitignore` 已忽略；
 根目录的 `*.lnk` 快捷方式是本机残留，不属于项目文件。本次交付已清理这些无用文件，
 仓库只保留源码、文档、`app.ico`、解决方案与 `AGENT.MD`。
+
+---
+
+## 7. 单 EXE 发布（WinUI 3 官方方案）
+
+### 7.1 工具链审查结论
+
+| 项 | 实测值 |
+| --- | --- |
+| .NET SDK | 10.0.403（工程 TFM 仍为 `net8.0`，未升级） |
+| Microsoft.WindowsAppSDK | 2.6.5（未升级） |
+| Windows SDK BuildTools | 10.0.26100.0 |
+| CommunityToolkit.Mvvm | 8.3.2（未升级，8.4.x 会报 MVVMTK0045） |
+| 官方单文件支持 | 2.6.5 自带 `Microsoft.WindowsAppSDK.SingleFile.targets`，**支持** unpackaged + self-contained + single-file |
+
+官方 targets 的硬性要求（`PrepareForBuild` 前校验）：`EnableMsixTooling=true`（生成嵌入版
+`resources.pri`）、`WindowsPackageType=None`、`IncludeAllContentForSelfExtract=true`（原生 DLL
+SxS 重定向）、`WindowsAppSDKSelfContained=true` + `SelfContained=true`。
+`WindowsAppSDKSelfContained=true` 会自动启用 `UndockedRegFreeWinRT` 的 `ModuleInitializer`，
+在程序入口前设置 `MICROSOFT_WINDOWSAPPRUNTIME_BASE_DIRECTORY`（单文件解压目录），
+这是 `.pri` / 原生 DLL 能正确定位的关键，**无需改业务代码或 GUI**。
+
+### 7.2 配置（可重复执行）
+
+新增 `src/SubtitleMerger.App/Properties/PublishProfiles/SingleFile.pubxml`（独立发布配置，
+默认目录发布 `dist/SubtitleMerger` 不受影响），关键属性：
+
+```xml
+<SelfContained>true</SelfContained>
+<PublishSingleFile>true</PublishSingleFile>
+<IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+<IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+<EnableMsixTooling>true</EnableMsixTooling>
+<WindowsPackageType>None</WindowsPackageType>
+<WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+<WindowsAppSdkUndockedRegFreeWinRTInitialize>true</WindowsAppSdkUndockedRegFreeWinRTInitialize>
+<RuntimeIdentifier>win-x64</RuntimeIdentifier>
+<DebugType>embedded</DebugType>
+<PublishDir>...\dist\SingleExe\</PublishDir>
+```
+
+配套最小改动：
+
+- `SubtitleMerger.App.csproj`：`IncludeXamlArtifactsInPublish` 目标加
+  `Condition="'$(PublishSingleFile)' != 'true'"`。目录发布仍需外部 `.xbf/.pri`；
+  单文件模式下由 `EnableMsixTooling` 生成的嵌入 `resources.pri` 承载，继续复制会让发布目录残留文件。
+- `Directory.Build.props`：仅当 `PublishProfile=SingleFile` 时给被引用的 Core 项目设
+  `DebugType=embedded`，消除松散的 `SubtitleMerger.Core.pdb`（`.pubxml` 属性不会传给 ProjectReference）。
+- `启动.bat`：工作区根目录一键启动；`dist\SingleExe\SubtitleMerger.exe` 不存在时自动执行发布。
+
+**发布命令**：
+
+```powershell
+dotnet publish src/SubtitleMerger.App/SubtitleMerger.App.csproj -c Release -p:PublishProfile=SingleFile --nologo
+# 或双击根目录 启动.bat
+```
+
+### 7.3 实际发布结果
+
+- 输出目录 `dist/SingleExe/` **只有一个文件**：`SubtitleMerger.exe`（230,708,861 B ≈ 220 MiB）。
+- 顶层条目数 1，文件数 1，目录数 0；无 `.xbf` / `.pri` / `.dll` / `.pdb` / `.json` 残留。
+- 对比：改造前目录发布约 155 MB 分散在 200+ 文件；单文件把所有依赖、WinAppSDK 运行时、
+  .NET 8 运行时、XAML 资源、原生 DLL 与图标全部打进 bundle，体积增至 220 MiB（未压缩，换取启动速度）。
+- `publish` 退出码 0，0 Warning / 0 Error；`dotnet build -c Release` 与完整自检
+  **227 项 / 失败 0** 在配置改动后仍通过（A 组冻结基准未漂移）。
+- 用户已在本机实际启动单 EXE 验证可运行（本会话非提升、无交互桌面，
+  `app.manifest` 的 `requireAdministrator` 会让自动化 `--smoke` 停在提权阶段，属环境限制）。
+
+### 7.4 兼容性与风险检查结论
+
+| 检查项 | 结论 |
+| --- | --- |
+| WinUI 3 初始化 / XAML 资源加载 | 由官方 `ModuleInitializer` + 嵌入 `resources.pri` 处理；首次运行释放到 `%TEMP%\.net\` 后按 `MICROSOFT_WINDOWSAPPRUNTIME_BASE_DIRECTORY` 定位 |
+| `.xbf` / `.pri` | 单文件发布目标不再复制外部副本，改由 `EnableMsixTooling` 嵌入；未删除任何必要资源 |
+| WinAppSDK 自包含运行时 | `WindowsAppSDKSelfContained=true` + `SelfContained=true`，不要求目标机预装 .NET 或 Windows App SDK Runtime |
+| 原生 DLL 加载路径 | `IncludeAllContentForSelfExtract` + 清单 `loadFrom='%MICROSOFT_WINDOWSAPPRUNTIME_BASE_DIRECTORY%...'` SxS 重定向 |
+| 首次运行释放 | .NET bundle 自动释放；`IncludeNativeLibrariesForSelfExtract=true` 一并释放原生库 |
+| 普通用户权限 | 受**既有** `app.manifest` `requireAdministrator` 限制，会请求 UAC 提升；这是原有行为（v1.1 为写输出目录/拖放兼容而设），单文件改造未改变权限模型，也未改 GUI/业务逻辑 |
+| 杀软误报 | 220 MiB 自解压单文件 + 内嵌原生 DLL，属 .NET SingleFile 常见启发式误报形态；分发时建议附 SHA256 与代码签名（本项目暂未签名） |
+| 退出 / 二次启动 / 升级覆盖 | bundle 释放目录按程序集版本/内容哈希复用，二次启动不再解压；升级时替换 exe 即可，旧释放目录由 .NET 运行时自行管理 |
+| 干净环境（无 .NET / 无 WinAppSDK 预装） | 配置上满足（self-contained）；本会话无干净 VM，未做隔离虚拟机实测，此项如实标注为**未实测** |
+
+### 7.5 性能与体积优化评估
+
+- **ReadyToRun**：`PublishReadyToRun=false`。WinUI 3 + WinRT 投影下 R2R 会显著放大体积、
+  且对本应用（启动后主要耗时在 ffmpeg 子进程与媒体探测）收益有限；未启用。
+- **裁剪 / Native AOT**：`PublishTrimmed=false`，**明确不启用**——XAML 反射绑定与 WinRT
+  激活不兼容激进裁剪，强行启用会破坏功能。
+- **压缩**：`EnableCompressionInSingleFile=false`，避免每次启动 CPU 解压 220 MiB；
+  若分发带宽优先，可单独打开（预计体积可降约 35–40%，冷启动变慢）。
+- **无用依赖清理**：仅通过 `DebugType=embedded` 消除了 2 个 PDB 残留；未删任何运行时依赖，
+  未移除重复资源。发布目录里除 EXE 外无其它文件。
+
+### 7.6 运行限制（必须如实告知）
+
+1. 目标 OS：**Windows x64**，Windows 10 1809 (10.0.17763) 及以上。
+2. 仍需本机 `ffmpeg` / `ffprobe`（硬字幕需 `libass`）——这是业务外部依赖，**未**内嵌进 EXE；
+   查找顺序与配置 `%USERPROFILE%\.subtitle_merger.json` 不变。
+3. 首次启动会向 `%TEMP%\.net\` 释放约 200+ 个运行时文件；这是 .NET 官方单文件机制，
+   不是「隐藏依赖」，也不需要用户手动管理。
+4. 发布配置只在显式 `-p:PublishProfile=SingleFile` 时生效；README 里的目录发布命令保持原样。

@@ -1,0 +1,12 @@
+<Project>
+  <!--
+    仅在使用 SingleFile 发布配置时，让被引用的 Core 项目也把 PDB 嵌入程序集。
+    .pubxml 里的 DebugType 只作用于 App 项目；ProjectReference 不会继承它，
+    否则单文件发布目录会残留一个松散的 SubtitleMerger.Core.pdb。
+    条件限定在 PublishProfile=SingleFile，普通 build / 目录发布完全不受影响。
+  -->
+  <PropertyGroup Condition="'$(PublishProfile)' == 'SingleFile'">
+    <DebugType>embedded</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+</Project>
