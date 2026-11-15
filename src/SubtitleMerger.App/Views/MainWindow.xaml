@@ -229,6 +229,9 @@
                                          Text="{Binding OutputDir, Mode=TwoWay}" />
                                 <Button Content="浏览" Command="{Binding ChooseOutdirCommand}" />
                                 <Button Content="同源文件" Command="{Binding UseSourceDirCommand}" />
+                                <CheckBox Content="输出目录同源同步" VerticalAlignment="Center"
+                                          ToolTipService.ToolTip="开启后，每次添加不同目录的文件会自动把输出目录同步为该源文件所在目录；设置会持久保存。"
+                                          IsChecked="{Binding SyncOutputDir, Mode=TwoWay}" />
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Spacing="24">
                                 <CheckBox Content="保留视频原有字幕轨" IsChecked="{Binding KeepExistingSubs, Mode=TwoWay}" />

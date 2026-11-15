@@ -318,6 +318,9 @@ internal static class Program
               xaml.Contains(@"MinHeight=""110""", StringComparison.Ordinal));
         Check("布局：Pivot 不再使用固定 Height（固定高度会把底部按钮挤出窗口）",
               !System.Text.RegularExpressions.Regex.IsMatch(xaml, @"<Pivot[^>]*\sHeight="""));
+        Check("布局：输出页保留「输出目录同源同步」持久开关",
+              xaml.Contains(@"Content=""输出目录同源同步""", StringComparison.Ordinal) &&
+              xaml.Contains(@"IsChecked=""{Binding SyncOutputDir, Mode=TwoWay}""", StringComparison.Ordinal));
     }
 
     /// <summary>

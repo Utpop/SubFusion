@@ -167,6 +167,12 @@ dist\SubtitleMerger\SubtitleMerger.exe --smoke
   `Parallel.ForEachAsync` 的 `MaxDegreeOfParallelism` 不要去掉。
 - **不要顺手清理** `docs/` 里记录的「原版固有行为」（见第 1 节），也不要改配置键名、
   日志文案前缀 `[HH:MM:SS]`、CSV 的 UTF-8 BOM + CRLF 格式。
+- **输出目录同源同步（1.2 新增）**：`输出目录同源同步` 是持久开关，默认**打开**，状态存于配置
+  可选键 `sync_outdir`（`AppConfig` 保留未知键，故 19 个原有键名/类型/格式不变，Python 版互读不受影响；
+  旧配置无该键时按默认打开处理）。开启时，`AddPathsAsync` 检测到本次添加的目录相对上一次同步发生变化
+  就自动把 `OutputDir` 对齐过去；`ClearAll` 重置基准；手动「浏览」或点「同源文件」会更新基准，
+  因此同一目录继续添加文件不会冲掉用户手动指定的输出目录。逻辑全在 `MainViewModel`，
+  `SyncOutputDirTo` 是唯一改写点；改这里要同步 `SelfTest` 的布局断言（C 组）。
 - **提交前必跑**：`dotnet build -c Release` + 完整自检 + 单 EXE 发布（见第 7 节）。
   若自检报临时目录 `UnauthorizedAccessException`，按第 3 节覆盖 `TMP/TEMP` 再跑。
 

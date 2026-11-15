@@ -49,6 +49,8 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
     private bool _capsChecked;
     private string _lastDir = "";
     private string _lastOutputDir = "";
+    /// <summary>最近一次据以同步输出目录的源目录；用于判断「更换目录」是否真的发生。</summary>
+    private string _syncSourceDir = "";
     private long _probeGeneration;
     private readonly HashSet<CancellationTokenSource> _probeSources = new();
     private CancellationTokenSource? _cancel;
@@ -103,6 +105,13 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
     [ObservableProperty] private double workers = 1;
     [ObservableProperty] private string suffix = "";
     [ObservableProperty] private string outputDir = "";
+
+    /// <summary>
+    /// 持久开关（默认打开）：输出目录始终与当前源文件的目录保持一致。
+    /// 开启时，添加/拖入文件导致源目录变化会自动改写 OutputDir；关闭后由用户自行指定。
+    /// 状态写入配置 sync_outdir，下次启动仍生效。
+    /// </summary>
+    [ObservableProperty] private bool syncOutputDir = true;
     [ObservableProperty] private bool keepExistingSubs = true;
     [ObservableProperty] private bool keepMetadata = true;
     [ObservableProperty] private bool overwrite = true;
@@ -141,6 +150,13 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
     }
     partial void OnVcodecChanged(string value) { if (!_loadingConfig) UpdateHint(); }
 
+    // 打开「输出目录同源同步」时立即把输出目录对齐到当前源目录；关闭开关不改动输出目录
+    partial void OnSyncOutputDirChanged(bool value)
+    {
+        if (_loadingConfig || !value) return;
+        SyncOutputDirTo(CurrentSourceDir(), force: true);
+    }
+
     #endregion
 
     #region 初始化 / 配置
@@ -162,6 +178,8 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
         if (_cfg.Get("preset") is { Length: > 0 } p) Preset = p;
         if (_cfg.Get("suffix") is { } s) Suffix = s;
         if (_cfg.Get("outdir") is { } od) OutputDir = od;
+        // 新开关键：缺省（旧配置无此键）时保持默认「打开」，仅当用户显式写下 false 才关闭
+        if (_cfg.Has("sync_outdir") && _cfg.GetBool("sync_outdir") is bool sod) SyncOutputDir = sod;
         if (double.TryParse(_cfg.Get("crf"), NumberStyles.Float, CultureInfo.InvariantCulture, out double crf)) Crf = crf;
         if (double.TryParse(_cfg.Get("workers"), NumberStyles.Float, CultureInfo.InvariantCulture, out double w)) Workers = w;
         if (double.TryParse(_cfg.Get("threshold"), NumberStyles.Float, CultureInfo.InvariantCulture, out double t)) Threshold = t;
@@ -192,6 +210,7 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
         _cfg.Set("workers", ((int)Workers).ToString(CultureInfo.InvariantCulture));
         _cfg.Set("suffix", Suffix);
         _cfg.Set("outdir", OutputDir);
+        _cfg.Set("sync_outdir", SyncOutputDir);
         _cfg.Set("keep_existing_subs", KeepExistingSubs);
         _cfg.Set("keep_metadata", KeepMetadata);
         _cfg.Set("convert_encoding", ConvertEncoding);
@@ -318,8 +337,13 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
             return;
         }
 
-        if (Directory.Exists(paths[0])) _lastDir = paths[0];
-        else if (File.Exists(paths[0])) _lastDir = Path.GetDirectoryName(paths[0]) ?? _lastDir;
+        string addedDir;
+        if (Directory.Exists(paths[0])) addedDir = paths[0];
+        else if (File.Exists(paths[0])) addedDir = Path.GetDirectoryName(paths[0]) ?? _lastDir;
+        else addedDir = _lastDir;
+        _lastDir = addedDir;
+        // 持久开关：本次添加的目录与上次不同时，自动把输出目录同步过去
+        SyncOutputDirTo(addedDir);
 
         // 用 HashSet 去重：旧写法每个新文件都要和已存在的全部文件线性比较，
         // 反复「添加文件夹」时会退化成 O(n²)。
@@ -362,6 +386,7 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
         _rows.Clear();
         _selected.Clear();
         Jobs.Clear();
+        _syncSourceDir = "";
         CountText = "未添加文件";
         OverallProgress = 0;
         StatusText = "已清空";
@@ -925,6 +950,25 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
 
     #region 输出目录 / 报告 / 杂项
 
+    /// <summary>当前任务列表里第一个视频所在目录；空列表返回空串。</summary>
+    private string CurrentSourceDir()
+        => _videos.Count > 0 ? (Path.GetDirectoryName(_videos[0]) ?? "") : "";
+
+    /// <summary>
+    /// 「输出目录同源同步」开关的实际动作：把输出目录对齐到指定源目录。
+    /// 仅当源目录相对上一次同步确实变化时才改写，避免同一目录反复添加时
+    /// 冲掉用户手动指定的输出目录；force 用于刚打开开关时立即对齐一次。
+    /// </summary>
+    private void SyncOutputDirTo(string sourceDir, bool force = false)
+    {
+        if (!SyncOutputDir || string.IsNullOrEmpty(sourceDir)) return;
+        if (!force && string.Equals(sourceDir, _syncSourceDir, StringComparison.OrdinalIgnoreCase))
+            return;
+        _syncSourceDir = sourceDir;
+        if (!string.Equals(OutputDir?.Trim(), sourceDir, StringComparison.OrdinalIgnoreCase))
+            OutputDir = sourceDir;
+    }
+
     [RelayCommand]
     private async Task ChooseOutdir()
     {
@@ -932,13 +976,20 @@ public partial class MainViewModel : ObservableObject, IBatchEvents
         if (string.IsNullOrEmpty(folder)) return;
         OutputDir = folder;
         _lastDir = folder;
+        // 手动选择后以当前源目录为基准：此后只有「源目录更换」才会再次自动同步，
+        // 同一目录继续添加文件不会覆盖用户刚选的输出目录
+        _syncSourceDir = CurrentSourceDir();
     }
 
     [RelayCommand]
     private void UseSourceDir()
     {
-        if (_videos.Count == 0) return;
-        OutputDir = Path.GetDirectoryName(_videos[0]) ?? "";
+        string dir = CurrentSourceDir();
+        if (dir.Length == 0) return;
+        OutputDir = dir;
+        // 「同源文件」按钮本身就是显式对齐：同步基准一并更新，避免下次添加同目录文件时
+        // 又因基准滞后而把输出目录改回别处
+        _syncSourceDir = dir;
     }
 
     [RelayCommand]
