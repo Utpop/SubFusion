@@ -3,7 +3,7 @@ setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
 
-set "APP_EXE=%CD%\dist\SingleExe\SubtitleMerger.exe"
+set "APP_EXE=%CD%\dist\SingleExe\SubFusion.exe"
 
 if not exist "%APP_EXE%" (
     echo Single EXE not found. Publishing release single-file build...
@@ -12,7 +12,7 @@ if not exist "%APP_EXE%" (
         echo .NET SDK not found. Please install .NET SDK and retry.
         exit /b 1
     )
-    dotnet publish "src\SubtitleMerger.App\SubtitleMerger.App.csproj" -c Release -p:PublishProfile=SingleFile --nologo
+    dotnet publish "src\SubFusion.App\SubFusion.App.csproj" -c Release -p:PublishProfile=SingleFile --nologo
     if errorlevel 1 (
         echo Publish failed.
         exit /b 1

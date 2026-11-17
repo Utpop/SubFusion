@@ -1,0 +1,78 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    WinUI 3 桌面应用（未打包 / unpackaged）。
+    WindowsPackageType=None + WindowsAppSDKSelfContained=true：
+    无需 MSIX 安装、无需目标机预装 Windows App SDK 运行时，直接双击 exe 即可运行。
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>SubFusion.App</RootNamespace>
+    <AssemblyName>SubFusion</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12.0</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DefaultLanguage>zh-CN</DefaultLanguage>
+  </PropertyGroup>
+
+  <!--
+    NETSDK1244 的定向降级。
+
+    SDK 建议去掉 IncludeAllContentForSelfExtract、改用内存内单文件；但 Windows App SDK 的
+    单文件 targets 依赖「内容解压到磁盘 + SxS 重定向」来定位原生 DLL 与嵌入的 resources.pri，
+    去掉该属性会让发布产物无法启动，所以属性必须保留。
+
+    抑制只能写成无条件属性：PublishSingleFile / PublishProfile 在单文件发布时由 .pubxml
+    在项目求值之后才设置，写成条件属性对这条诊断无效（已在 csproj 与 Directory.Build.props
+    两处实测）。NETSDK1244 本身只在 IncludeAllContentForSelfExtract=true 时产生，
+    因此无条件降级不会掩盖其它警告。
+  -->
+  <PropertyGroup>
+    <MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);NETSDK1244</MSBuildWarningsAsMessages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SubFusion.Core\SubFusion.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 沿用原程序的图标资源；AppWindow.SetIcon 直接读取输出目录下的该文件 -->
+    <Content Include="..\..\app.ico" Link="Assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!--
+    WinUI 3 的 XAML 编译产物（.xbf）与资源索引（.pri）默认只进入 build 输出，
+    dotnet publish 不会自动带上，导致发布目录里的 exe 因资源缺失而启动失败。
+    目录发布（默认）时显式补上；单文件发布时这些资源由 EnableMsixTooling
+    生成的嵌入版 resources.pri 承载，再复制一份反而会让发布目录残留外部文件。
+  -->
+  <Target Name="IncludeXamlArtifactsInPublish" AfterTargets="ComputeFilesToPublish"
+          Condition="'$(PublishSingleFile)' != 'true'">
+    <ItemGroup>
+      <!-- 递归收集全部 XAML 编译产物（App / Views / Pages / Styles），
+           避免新增页面或样式字典后发布目录漏拷 .xbf 导致启动失败。 -->
+      <_AppXamlArtifact Include="$(TargetDir)**\*.xbf" />
+      <ResolvedFileToPublish Include="@(_AppXamlArtifact)"
+                             RelativePath="%(_AppXamlArtifact.RecursiveDir)%(_AppXamlArtifact.Filename)%(_AppXamlArtifact.Extension)"
+                             CopyToPublishDirectory="PreserveNewest" />
+      <ResolvedFileToPublish Include="$(TargetDir)SubFusion.pri"
+                             RelativePath="SubFusion.pri" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
+
+</Project>
