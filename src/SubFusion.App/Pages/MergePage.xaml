@@ -174,8 +174,11 @@
                         <TextBlock Text="{x:Bind ViewModel.StrategyDetail, Mode=OneWay}"
                                    Style="{StaticResource CaptionStyle}" />
 
-                        <InfoBar Severity="Error" IsClosable="False" IsOpen="{x:Bind ViewModel.HasReasons, Mode=OneWay}"
-                                 Title="不满足无损拼接的参数" Message="下列差异会导致统一重新编码：" />
+                        <!-- 严重级别与文案都由 ViewModel 决定：仅时间轴差异只是重封装，不该显示成错误 -->
+                        <InfoBar IsClosable="False" IsOpen="{x:Bind ViewModel.HasReasons, Mode=OneWay}"
+                                 Severity="{x:Bind ViewModel.ReasonsAreBlocking, Mode=OneWay, Converter={StaticResource BoolToSeverity}}"
+                                 Title="{x:Bind ViewModel.ReasonTitle, Mode=OneWay}"
+                                 Message="{x:Bind ViewModel.ReasonIntro, Mode=OneWay}" />
                         <ItemsControl ItemsSource="{x:Bind ViewModel.Reasons}"
                                       Visibility="{x:Bind ViewModel.HasReasons, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
                             <ItemsControl.ItemTemplate>

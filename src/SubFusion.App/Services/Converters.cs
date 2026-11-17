@@ -1,7 +1,21 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Data;
 
 namespace SubFusion.App.Services;
+
+/// <summary>
+/// bool → InfoBarSeverity：true 表示必须重编码（错误级红色），false 表示只是重封装（提示级）。
+/// 差异提示条的严重级别必须跟着实际策略走，否则无损重封装也会被渲染成报错。
+/// </summary>
+public sealed class BoolToInfoBarSeverityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language)
+        => value is bool b && b ? InfoBarSeverity.Error : InfoBarSeverity.Warning;
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language)
+        => value is InfoBarSeverity s && s == InfoBarSeverity.Error;
+}
 
 /// <summary>bool → Visibility（true 显示）；ConverterParameter=invert 时反转。</summary>
 public sealed class BoolToVisibilityConverter : IValueConverter

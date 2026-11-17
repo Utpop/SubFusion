@@ -732,8 +732,8 @@ internal static class Program
             Check("G1 媒体工具定位成功", tools.Available && tools.ProbeAvailable);
 
             // ---- 探测：完整字段 ----
-            string a = await MakeClipAsync(ffmpeg, work, "clipA", 320, 240, 24, "aac", 44100, 2, 2.0, "testsrc");
-            string b = await MakeClipAsync(ffmpeg, work, "clipB", 320, 240, 24, "aac", 44100, 2, 2.0, "smptebars");
+            string a = await MakeClipAsync(ffmpeg, work, "clipA", 320, 240, "24", "aac", 44100, 2, 2.0, "testsrc");
+            string b = await MakeClipAsync(ffmpeg, work, "clipB", 320, 240, "24", "aac", 44100, 2, 2.0, "smptebars");
             Check("G2 生成测试素材", File.Exists(a) && File.Exists(b));
             if (!File.Exists(a) || !File.Exists(b)) return;
 
@@ -766,7 +766,7 @@ internal static class Program
             Check("G10 参数相同的输入判定为可无损拼接", same.CanStreamCopy,
                   string.Join("；", same.Reasons.Select(r => r.Detail)));
 
-            string c = await MakeClipAsync(ffmpeg, work, "clipC", 640, 360, 30, "aac", 48000, 2, 2.0, "testsrc2");
+            string c = await MakeClipAsync(ffmpeg, work, "clipC", 640, 360, "30", "aac", 48000, 2, 2.0, "testsrc2");
             MediaBundle bundleC = await MediaInspector.InspectAsync(ffprobe, c);
             MergeCompatibility diff = CompatibilityAnalyzer.Analyze(new[] { bundle, bundleC });
             Check("G11 分辨率/帧率/采样率不同判定为不可无损拼接", !diff.CanStreamCopy);
@@ -832,8 +832,8 @@ internal static class Program
             }
 
             // ---- 分辨率适配模式 ----
-            string wide = await MakeClipAsync(ffmpeg, work, "wide", 640, 360, 24, "aac", 44100, 2, 2.0, "testsrc");
-            string square = await MakeClipAsync(ffmpeg, work, "square", 320, 320, 24, "aac", 44100, 2, 2.0, "testsrc2");
+            string wide = await MakeClipAsync(ffmpeg, work, "wide", 640, 360, "24", "aac", 44100, 2, 2.0, "testsrc");
+            string square = await MakeClipAsync(ffmpeg, work, "square", 320, 320, "24", "aac", 44100, 2, 2.0, "testsrc2");
             foreach ((FitMode mode, string name) in new[]
                      {
                          (FitMode.Contain, "contain"), (FitMode.Cover, "cover"), (FitMode.Stretch, "stretch"),
@@ -1038,6 +1038,48 @@ internal static class Program
                 await task.AnalyzeAsync(new VideoMergeOptions { Inputs = new List<string> { a, b } });
             Check("G47 分析接口返回每个输入的探测结果", probed.Count == 2 && probed.All(x => x.Success));
             Check("G48 分析接口给出可无损拼接结论", analyzed.CanStreamCopy);
+
+            // ---- 仅时间轴差异：应走无损重封装，而不是重新编码 ----
+            // 同编码/同分辨率/同色彩，只有 mp4 时基与帧率尾数不同。
+            string tb1 = await MakeClipAsync(ffmpeg, work, "tb1", 320, 240, "30", "aac", 44100, 2, 2.0,
+                                             "testsrc", timescale: 15360);
+            string tb2 = await MakeClipAsync(ffmpeg, work, "tb2", 320, 240, "29.97", "aac", 44100, 2, 2.0,
+                                             "testsrc2", timescale: 11996);
+            MediaBundle bt1 = await MediaInspector.InspectAsync(ffprobe, tb1);
+            MediaBundle bt2 = await MediaInspector.InspectAsync(ffprobe, tb2);
+            MergeCompatibility axis = CompatibilityAnalyzer.Analyze(new[] { bt1, bt2 });
+            Check("G49 仅时间基准/帧率不同时判定为可重封装", axis.CanRemuxOnly, axis.PrimaryReason);
+            Check("G50 仅时间轴差异不要求重新编码", !axis.NeedsReencode &&
+                  axis.Reasons.Any(r => r.Code == "timebase") &&
+                  axis.Reasons.Any(r => r.Fix == MergeReasonFix.Remux),
+                  string.Join("；", axis.Reasons.Select(r => r.Code + "/" + r.Fix)));
+
+            string remuxed = Path.Combine(work, "remux_only.mkv");
+            MergeResult remuxRun = await task.RunAsync(new VideoMergeOptions
+            {
+                Inputs = new List<string> { tb1, tb2 },
+                OutputPath = remuxed,
+                Container = "mkv",
+                // 明确禁止重编码：若实现回退到重编码，这条会失败。
+                AllowReencode = false,
+                VerifyOutput = true,
+            });
+            Check("G51 仅时间轴差异时禁止重编码仍能完成", remuxRun.Ok, remuxRun.Error);
+            Check("G52 该路径未重新编码视频与音频", remuxRun.Ok && remuxRun.VideoCopied && remuxRun.AudioCopied,
+                  $"video={remuxRun.VideoCopied} audio={remuxRun.AudioCopied}");
+            if (remuxRun.Ok)
+            {
+                MediaBundle ri = await MediaInspector.InspectAsync(ffprobe, remuxed);
+                double want = bt1.Duration + bt2.Duration;
+                Check("G53 重封装拼接后时长≈各段之和",
+                      Math.Abs(ri.Duration - want) < 0.5, $"期望 {want:F2}s，实际 {ri.Duration:F2}s");
+            }
+
+            // 分辨率不同无法靠重封装解决，必须仍然判为需要重编码。
+            MergeCompatibility geo = CompatibilityAnalyzer.Analyze(new[] { bundle, bundleC });
+            Check("G54 分辨率/采样率不同仍然需要重新编码",
+                  geo.NeedsReencode && geo.Reasons.Any(r => r.Fix == MergeReasonFix.Reencode),
+                  string.Join("；", geo.Reasons.Select(r => r.Code + "/" + r.Fix)));
         }
         finally
         {
@@ -1047,23 +1089,24 @@ internal static class Program
 
     /// <summary>用 lavfi 现场生成指定参数的测试片段。</summary>
     private static async Task<string> MakeClipAsync(string ffmpeg, string work, string name, int width, int height,
-                                                    int fps, string audioCodec, int sampleRate, int channels,
-                                                    double seconds, string source)
+                                                    string fps, string audioCodec, int sampleRate, int channels,
+                                                    double seconds, string source, int timescale = 0)
     {
         string path = Path.Combine(work, name + ".mp4");
         var args = new List<string>
         {
             "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", $"{source}=size={width}x{height}:rate={fps}",
+            "-f", "lavfi", "-i", $"{source}=size={width}x{height}:rate={fps}",   // fps 允许 "29.97" 这类精确值
             "-f", "lavfi", "-i", $"sine=frequency=440:sample_rate={sampleRate}",
             "-t", seconds.ToString("0.###", CultureInfo.InvariantCulture),
             // 显式写入 BT.709 色彩标记：编码器的 -colorspace 参数在多数封装下不会写进码流，
             // 必须走滤镜内的 setparams，否则同一批素材的色彩字段会是「未知」，兼容性判定无法对齐。
             "-vf", "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv",
             "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            "-c:a", audioCodec, "-ac", channels.ToString(CultureInfo.InvariantCulture),
-            "-shortest", path,
         };
+        // 显式指定 mp4 时基：默认值随 ffmpeg 版本变化，兼容性用例必须能精确控制它。
+        if (timescale > 0) args.AddRange(new[] { "-video_track_timescale", timescale.ToString(CultureInfo.InvariantCulture) });
+        args.AddRange(new[] { "-c:a", audioCodec, "-ac", channels.ToString(CultureInfo.InvariantCulture), "-shortest", path });
         ProcessCapture proc = await ProcessUtil.RunAsync(ffmpeg, args, 180);
         if (proc.ExitCode != 0) Console.WriteLine($"  (生成 {name} 失败：{proc.Stderr.Trim()})");
         return path;
@@ -1137,9 +1180,9 @@ internal static class Program
             var tools = await FfmpegTools.ResolveAsync(ffmpeg, ffprobe);
             var task = new VideoMergeTask(tools);
 
-            string c1 = await MakeClipAsync(ffmpeg, work, "part1", 320, 240, 24, "aac", 44100, 2, 2.0, "testsrc");
-            string c2 = await MakeClipAsync(ffmpeg, work, "part2", 320, 240, 24, "aac", 44100, 2, 3.0, "smptebars");
-            string c3 = await MakeClipAsync(ffmpeg, work, "part3", 320, 240, 24, "aac", 44100, 2, 2.5, "testsrc2");
+            string c1 = await MakeClipAsync(ffmpeg, work, "part1", 320, 240, "24", "aac", 44100, 2, 2.0, "testsrc");
+            string c2 = await MakeClipAsync(ffmpeg, work, "part2", 320, 240, "24", "aac", 44100, 2, 3.0, "smptebars");
+            string c3 = await MakeClipAsync(ffmpeg, work, "part3", 320, 240, "24", "aac", 44100, 2, 2.5, "testsrc2");
             if (!new[] { c1, c2, c3 }.All(File.Exists)) { Console.WriteLine("(素材生成失败，跳过)"); return; }
 
             // ---- 默认自动章节 ----

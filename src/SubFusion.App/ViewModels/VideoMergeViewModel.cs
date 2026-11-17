@@ -226,7 +226,13 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     [ObservableProperty] private bool canStreamCopy;
     [ObservableProperty] private string strategyText = "添加视频后自动分析";
     [ObservableProperty] private string strategyDetail = "";
+    [ObservableProperty] private bool canRemuxOnly;
     [ObservableProperty] private bool hasReasons;
+    /// <summary>差异提示的标题：随策略变化，不能写死成「会导致统一重新编码」。</summary>
+    [ObservableProperty] private string reasonTitle = "";
+    [ObservableProperty] private string reasonIntro = "";
+    /// <summary>true 表示必须重编码（用警示色）；false 表示只是会重封装（用提示色）。</summary>
+    [ObservableProperty] private bool reasonsAreBlocking;
     [ObservableProperty] private string analysisError = "";
 
     public ObservableCollection<string> Reasons { get; } = new();
@@ -236,6 +242,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     {
         Analyzed = true;
         CanStreamCopy = compatibility.CanStreamCopy;
+        CanRemuxOnly = compatibility.CanRemuxOnly;
         Reasons.Clear();
         foreach (MergeReason reason in compatibility.Reasons) Reasons.Add(reason.Detail);
         HasReasons = Reasons.Count > 0;
@@ -245,15 +252,29 @@ public sealed partial class VideoMergeViewModel : ObservableObject
             StrategyText = "无损拼接（concat + stream copy）";
             StrategyDetail = "所有输入的编码、分辨率、帧率、色彩与音频参数一致，直接拼接，不重新编码。";
         }
+        else if (compatibility.CanRemuxOnly)
+        {
+            StrategyText = "无损重封装后拼接";
+            StrategyDetail = "差异只在时间轴（时间基准/帧率），重封装对齐即可拼接，画质不受任何损失。";
+            ReasonTitle = "需要先对齐时间轴";
+            ReasonIntro = "下列差异会用无损重封装消除，视频不会被重新编码：";
+            ReasonsAreBlocking = false;
+        }
         else if (!AllowReencode)
         {
             StrategyText = "无法合并：已禁止重新编码";
             StrategyDetail = "输入不满足无损拼接条件，且「允许重新编码」已关闭。";
+            ReasonTitle = "不满足无损拼接的参数";
+            ReasonIntro = "下列差异无法用重封装消除，且「允许重新编码」已关闭：";
+            ReasonsAreBlocking = true;
         }
         else
         {
             StrategyText = "统一重新编码后拼接";
             StrategyDetail = "输入参数不一致，将按下方设置统一编码每个片段后再拼接。";
+            ReasonTitle = "不满足无损拼接的参数";
+            ReasonIntro = "下列差异会导致统一重新编码：";
+            ReasonsAreBlocking = true;
         }
     }
 
@@ -266,6 +287,8 @@ public sealed partial class VideoMergeViewModel : ObservableObject
             StrategyDetail = "";
             Reasons.Clear();
             HasReasons = false;
+            ReasonTitle = "";
+            ReasonIntro = "";
             return;
         }
         Analyzing = true;
@@ -690,7 +713,8 @@ public sealed partial class VideoMergeViewModel : ObservableObject
             await _ui.ShowErrorAsync("参数不完整：\n\n" + string.Join("\n", errors.Select(e => "· " + e)));
             return;
         }
-        if (!CanStreamCopy && !AllowReencode)
+        // 仅时间轴差异可以无损重封装，不需要用户开启「允许重新编码」。
+        if (!CanStreamCopy && !CanRemuxOnly && !AllowReencode)
         {
             await _ui.ShowErrorAsync("输入参数不一致，且「允许重新编码」已关闭，无法合并。\n" +
                                      "请开启该选项，或调整输入的编码参数。");
@@ -714,7 +738,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
 
         _record = _tasks.Add(TaskKind.VideoMerge,
             $"视频合并 · {options.Inputs.Count} 段",
-            $"{options.Inputs.Count} 段 · {(CanStreamCopy ? "无损拼接" : "统一重新编码")}",
+            $"{options.Inputs.Count} 段 · {(CanStreamCopy ? "无损拼接" : CanRemuxOnly ? "无损重封装" : "统一重新编码")}",
             options.OutputPath);
 
         // 任务中心可能已在排队/准备阶段取消：先检查，避免把已取消任务交给 Core。

@@ -169,6 +169,34 @@ public sealed class MergePlan
     }
 
     /// <summary>
+    /// 把单个输入重封装为统一时间基准的中间片段（全程 -c copy，画质零损失）。
+    /// 仅用于「差异全部落在时间轴参数上」的情形：帧率保持原样（各段的帧间隔由码流本身决定），
+    /// 只把时基统一到足够细的刻度，concat 时就不会产生非单调 DTS 与错位时长。
+    /// </summary>
+    public List<string> BuildRemuxCommand(MediaBundle bundle, string outputPath, string ffmpeg = "ffmpeg")
+    {
+        // 时间基准取 1/1000 的整数倍且能被常见帧率整除：1/90000 对 24/25/30/29.97 都能精确表达。
+        const int trackTimescale = 90000;
+        return new List<string>
+        {
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1",
+            "-i", bundle.Path,
+            "-map", "0:v:0",
+        }
+        // 走到重封装路径时各输入的音频轨数量必然一致（数量不一致会被判为需要重编码），
+        // 因此按本段是否真有音轨决定映射，不会映射出不存在的流。
+        .Concat(bundle.HasAudio && ExpectedAudioStreams > 0 ? new[] { "-map", "0:a:0" } : Array.Empty<string>())
+        .Concat(new[]
+        {
+            "-c", "copy",
+            "-video_track_timescale", trackTimescale.ToString(CultureInfo.InvariantCulture),
+            // 统一封装到 matroska 中间文件，避免 mp4 的 edit list 在拼接时引入额外偏移。
+            "-f", "matroska", outputPath,
+        })
+        .ToList();
+    }
+
+    /// <summary>
     /// 统一重新编码单个输入为中间片段。分辨率适配在滤镜链内完成：
     /// Contain=补边、Cover=裁切、Stretch=直接拉伸，均先按 SAR 还原方形像素，避免画面变形。
     /// 无音轨的输入用 anullsrc 补静音，保证每段音视频时长一致。
@@ -177,7 +205,9 @@ public sealed class MergePlan
     {
         var cmd = new List<string>
         {
-            ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+            // -progress pipe:1 是 FfmpegRunner 唯一的进度来源：没有它，ffmpeg 的 stdout 永不产出，
+            // 上层只能等到进程退出才拿到结果，UI 会一直停在上一阶段的文字上，看起来像卡死。
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1",
             "-i", bundle.Path,
         };
         if (!bundle.HasAudio)
@@ -299,7 +329,8 @@ public sealed class MergePlan
     {
         var cmd = new List<string>
         {
-            ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+            // 同样需要 -progress：拼接阶段同样由 FfmpegRunner 读取进度，否则进度条在大文件上完全不动。
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1",
             "-f", "concat", "-safe", "0", "-i", listPath,
         };
         bool withChapters = !string.IsNullOrEmpty(metaPath);

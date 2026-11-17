@@ -109,19 +109,24 @@ public sealed class VideoMergeEngine
                 diagnostics.Add("[兼容性] " + reason.Detail);
 
             bool streamCopy = compatibility.CanStreamCopy;
-            if (!streamCopy && !options.AllowReencode)
+            // 差异全部落在时间轴参数上时，重封装即可对齐，不触碰画面数据。
+            bool remuxOnly = compatibility.CanRemuxOnly;
+            if (!streamCopy && !remuxOnly && !options.AllowReencode)
                 return Fail(taskId, MergeStage.Planning,
                     "输入文件无法无损拼接，且未允许自动重新编码：" +
                     string.Join("；", compatibility.Reasons.Select(r => r.Detail)),
                     diagnostics, startedAt);
-            if (!streamCopy)
+            if (remuxOnly)
+                notices.Add("输入参数仅时间轴不一致，已用无损重封装对齐（不重新编码）：" +
+                            compatibility.PrimaryReason);
+            else if (!streamCopy)
                 notices.Add("输入参数不一致，已自动统一重新编码：" + compatibility.PrimaryReason);
             if (bundles.Any(b => b.HasAudio) && bundles.Any(b => !b.HasAudio))
                 notices.Add("部分输入没有音轨，已用静音补齐以对齐时间轴");
             if (bundles.Any(b => b.Audios.Count > 1))
                 notices.Add("多音轨输入只合并第一条音轨，其余音轨不进入输出");
 
-            var plan = MergePlan.Create(options, bundles, streamCopy, _tools.Capabilities);
+            var plan = MergePlan.Create(options, bundles, streamCopy || remuxOnly, _tools.Capabilities);
             notices.AddRange(plan.Notes);
             diagnostics.Add("[方案] " + plan.Describe());
 
@@ -135,8 +140,40 @@ public sealed class VideoMergeEngine
             {
                 segmentPaths.AddRange(bundles.Select(b => b.Path));
             }
+            else if (remuxOnly)
+            {
+                // 只重封装：每段 -c copy 到统一时基，速度取决于磁盘而不是 CPU。
+                Report(MergeStage.Merging, 5, "统一时间基准（无损重封装）…", 0, bundles.Count);
+                for (int i = 0; i < bundles.Count; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    string segment = Path.Combine(tempDir,
+                        "remux_" + i.ToString("D3", CultureInfo.InvariantCulture) + ".mkv");
+                    int index = i;
+                    (int code, string error) = await FfmpegRunner.RunFfmpegAsync(
+                        plan.BuildRemuxCommand(bundles[i], segment, _tools.Ffmpeg),
+                        durations[i],
+                        (percent, _, _) => Report(MergeStage.Merging,
+                            5 + percent / 100.0 * 75.0,
+                            string.Format(CultureInfo.InvariantCulture, "重封装 {0}/{1}：{2}",
+                                index + 1, bundles.Count, Path.GetFileName(bundles[index].Path)),
+                            index, bundles.Count),
+                        cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (code != 0 || !File.Exists(segment))
+                        return Fail(taskId, MergeStage.Merging,
+                            string.Format(CultureInfo.InvariantCulture, "第 {0} 段重封装失败：{1}", i + 1,
+                                LastLines(error)), diagnostics, startedAt);
+                    diagnostics.Add("[重封装] " + Path.GetFileName(segment) + " ← " +
+                                    Path.GetFileName(bundles[i].Path));
+                    segmentPaths.Add(segment);
+                }
+            }
             else
             {
+                // 先落到「合并中」，再启动第一个编码器：在 ffmpeg 的首条 -progress 到达之前，
+                // 阶段栏不应继续显示上一阶段的「判定合并方案…」。
+                Report(MergeStage.Merging, 5, "统一重新编码输入片段…", 0, bundles.Count);
                 double done = 0;
                 for (int i = 0; i < bundles.Count; i++)
                 {

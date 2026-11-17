@@ -428,6 +428,8 @@ G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine）�
 - **改字幕 ffmpeg 命令**：`CommandBuilder.BuildCommand` 的输出路径必须是命令最后一个参数；
   `plan` 决定 `OutputVerifier` 的预期；改了要同步 B/E 组断言。
 - **改合并判定**：`CompatibilityAnalyzer.Analyze` 是唯一判定点。新增参数比较时同步更新 G 组用例。
+  每条 `MergeReason` 必须标注 `Fix`：能用 `-c copy` 重封装解决的时间轴类差异（timebase/framerate）
+  标 `Remux`，只有编码/几何/色彩这类才标 `Reencode`。全 `Remux` 时引擎走重封装路径，不重编码。
 - **改合并命令**：`MergePlan.BuildSegmentCommand`（单段统一编码）与
   `MergePlan.BuildConcatCommand`（拼接）是两条唯一出口；`ffmpeg` 可执行文件由引擎传入，
   不要在这里写死 "ffmpeg"。

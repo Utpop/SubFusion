@@ -20,6 +20,7 @@
             <converters:EmptyToVisibilityConverter x:Key="EmptyToVisible" />
             <converters:NotEmptyToBoolConverter x:Key="NotEmptyToBool" />
             <converters:BoolToGlyphConverter x:Key="BoolToGlyph" />
+            <converters:BoolToInfoBarSeverityConverter x:Key="BoolToSeverity" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>
