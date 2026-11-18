@@ -58,6 +58,14 @@
                 <AppBarButton Label="下移" Command="{x:Bind ViewModel.MoveDownCommand}">
                     <AppBarButton.Icon><FontIcon Glyph="&#xE74B;"/></AppBarButton.Icon>
                 </AppBarButton>
+                <AppBarButton Label="按名称排序" Command="{x:Bind ViewModel.SortByNameCommand}"
+                              ToolTipService.ToolTip="按文件名自然排序（第2集 排在 第10集 之前）">
+                    <AppBarButton.Icon><FontIcon Glyph="&#xE8CB;"/></AppBarButton.Icon>
+                </AppBarButton>
+                <AppBarButton Label="识别无损组合" Command="{x:Bind ViewModel.DetectGroupsCommand}"
+                              ToolTipService.ToolTip="找出可以直接无损拼接的视频组合">
+                    <AppBarButton.Icon><FontIcon Glyph="&#xE721;"/></AppBarButton.Icon>
+                </AppBarButton>
                 <AppBarButton Label="移除选中" Command="{x:Bind ViewModel.RemoveSelectedCommand}">
                     <AppBarButton.Icon><FontIcon Glyph="&#xE738;"/></AppBarButton.Icon>
                 </AppBarButton>
@@ -97,10 +105,19 @@
                     <TextBlock Grid.Column="4" Text="音频 / 章节标题" Style="{StaticResource CaptionStyle}" FontWeight="SemiBold" />
                 </Grid>
 
+                <!--
+                  鼠标拖拽排序：CanDragItems + CanReorderItems 由 ListView 完成行重排，
+                  但重排只作用于可见容器，不会回写到 ViewModel.Inputs（合并顺序的来源），
+                  因此用拖拽开始/结束事件把最终顺序同步回 ViewModel。
+                  AllowDrop 保留，用于从资源管理器拖文件进来追加。
+                -->
                 <ListView x:Name="InputsList" Grid.Row="1"
                           ItemsSource="{x:Bind ViewModel.Inputs}"
                           SelectionMode="Extended"
-                          CanReorderItems="True" AllowDrop="True"
+                          CanDragItems="True" CanReorderItems="True" AllowDrop="True"
+                          DragItemsStarting="InputsList_DragItemsStarting"
+                          DragItemsCompleted="InputsList_DragItemsCompleted"
+                          Drop="InputsList_Drop"
                           ItemContainerStyle="{StaticResource TaskListItemStyle}"
                           SelectionChanged="InputsList_SelectionChanged">
                     <ListView.ItemTemplate>
@@ -179,12 +196,32 @@
                                  Severity="{x:Bind ViewModel.ReasonsAreBlocking, Mode=OneWay, Converter={StaticResource BoolToSeverity}}"
                                  Title="{x:Bind ViewModel.ReasonTitle, Mode=OneWay}"
                                  Message="{x:Bind ViewModel.ReasonIntro, Mode=OneWay}" />
-                        <ItemsControl ItemsSource="{x:Bind ViewModel.Reasons}"
+                        <!-- 差异按"要不要重编码"分组：一长串并列差异看不出重点，
+                             真正决定画质有没有损失的是其中有没有"必须重新编码"那一组。 -->
+                        <ItemsControl ItemsSource="{x:Bind ViewModel.ReasonGroups}"
                                       Visibility="{x:Bind ViewModel.HasReasons, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
                             <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="x:String">
-                                    <TextBlock Text="{x:Bind}" Style="{StaticResource CaptionStyle}"
-                                               Margin="0,2,0,0" TextWrapping="Wrap" />
+                                <DataTemplate x:DataType="vm:MergeReasonGroupViewModel">
+                                    <StackPanel Spacing="2" Margin="0,4,0,0">
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <!-- 会重编码的那一组用警示色，其余保持普通色：
+                                                 颜色本身就在回答"画质会不会变差"。 -->
+                                            <TextBlock Text="{x:Bind Title}" FontWeight="SemiBold" FontSize="12"
+                                                       Foreground="{x:Bind IsLossy, Converter={StaticResource LossyToBrush}}" />
+                                            <TextBlock Text="{x:Bind CountText}" Style="{StaticResource CaptionStyle}"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
+                                        <TextBlock Text="{x:Bind Intro}" Style="{StaticResource CaptionStyle}"
+                                                   TextWrapping="Wrap" />
+                                        <ItemsControl ItemsSource="{x:Bind Details}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate x:DataType="x:String">
+                                                    <TextBlock Text="{x:Bind}" Style="{StaticResource CaptionStyle}"
+                                                               Margin="12,1,0,0" TextWrapping="Wrap" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
@@ -192,6 +229,48 @@
                         <InfoBar Severity="Error" IsClosable="False"
                                  IsOpen="{x:Bind ViewModel.AnalysisError, Mode=OneWay, Converter={StaticResource NotEmptyToBool}}"
                                  Message="{x:Bind ViewModel.AnalysisError, Mode=OneWay}" />
+                    </StackPanel>
+                </Border>
+
+                <!-- 可无损拼接的组合（来自 Core 的 MergeGrouping） -->
+                <Border Style="{StaticResource CardStyle}"
+                        Visibility="{x:Bind ViewModel.HasGroups, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
+                    <StackPanel Spacing="8">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE721;" FontSize="14" VerticalAlignment="Center" />
+                            <TextBlock Text="可无损拼接的组合" Style="{StaticResource SectionTitleStyle}" />
+                            <ProgressRing IsActive="{x:Bind ViewModel.Grouping, Mode=OneWay}" Width="14" Height="14" />
+                        </StackPanel>
+                        <TextBlock Text="{x:Bind ViewModel.GroupSummary, Mode=OneWay}"
+                                   Style="{StaticResource CaptionStyle}" TextWrapping="Wrap" />
+                        <ItemsControl ItemsSource="{x:Bind ViewModel.Groups}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:MergeGroupViewModel">
+                                    <StackPanel Spacing="2" Margin="0,6,0,0">
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <TextBlock Text="{x:Bind Title}" FontWeight="SemiBold" FontSize="12" />
+                                            <TextBlock Text="{x:Bind KindText}" Style="{StaticResource CaptionStyle}"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Text="{x:Bind CountText}" Style="{StaticResource CaptionStyle}"
+                                                       VerticalAlignment="Center" />
+                                            <!-- x:Bind 在 DataTemplate 内绑定的是数据项本身，命令从页面 ViewModel 取仍需走根元素路径；
+                                                 此处用 Tag 传递组合对象，由 Click 处理器转交给 ViewModel，避免两套绑定混用。 -->
+                                            <Button Content="用这组" FontSize="11" Padding="8,2"
+                                                    Tag="{x:Bind}"
+                                                    Click="UseGroup_Click" />
+                                        </StackPanel>
+                                        <TextBlock Text="{x:Bind Signature}" Style="{StaticResource CaptionStyle}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <!-- 只在需要额外一步重封装时才出现，说明"为什么不能直接拼" -->
+                                        <TextBlock Text="{x:Bind ReasonText}" Style="{StaticResource CaptionStyle}"
+                                                   TextWrapping="Wrap"
+                                                   Visibility="{x:Bind ReasonText, Converter={StaticResource NotEmptyToBool}, Mode=OneWay}" />
+                                        <TextBlock Text="{x:Bind FileListText}" Style="{StaticResource CaptionStyle}"
+                                                   TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </StackPanel>
                 </Border>
 
@@ -282,6 +361,20 @@
                                            Text="Contain 完整显示并补边；Cover 填满并裁切；Stretch 直接拉伸。目标分辨率与帧率由 Core 按输入取最大值。" />
                             </StackPanel>
                         </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- 完成后处理：删源是不可逆操作，单独成卡并与普通选项隔开 -->
+                <Border Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="完成后处理" Style="{StaticResource SectionTitleStyle}" />
+                        <CheckBox Content="校验输出后删除源文件"
+                                  IsChecked="{x:Bind ViewModel.DeleteSource, Mode=TwoWay}"
+                                  ToolTipService.ToolTip="合并成功且输出通过全片解码校验后，删除参与合并的原始视频。不可撤销。" />
+                        <InfoBar Severity="Warning" IsClosable="False"
+                                 IsOpen="{x:Bind ViewModel.DeleteSource, Mode=OneWay}"
+                                 Title="删除前会先证明输出完好"
+                                 Message="合并完成后对整个输出做一次全片解码校验（不只是开头和结尾）。只有整段都能完整解码才会删除源文件；校验不通过时源文件一律保留。此操作不可撤销。" />
                     </StackPanel>
                 </Border>
 

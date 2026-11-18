@@ -21,6 +21,7 @@
             <converters:NotEmptyToBoolConverter x:Key="NotEmptyToBool" />
             <converters:BoolToGlyphConverter x:Key="BoolToGlyph" />
             <converters:BoolToInfoBarSeverityConverter x:Key="BoolToSeverity" />
+    <converters:LossyToBrushConverter x:Key="LossyToBrush" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

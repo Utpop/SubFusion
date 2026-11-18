@@ -62,6 +62,7 @@ internal static class Program
         CheckCommands(root);
         CheckProgress(root);
         await CheckEncodingsAsync(root);
+        CheckNaturalSort();
 
         Console.WriteLine("=== B. 端到端功能验证（本机 ffmpeg） ===");
         await EndToEndAsync(args.Contains("--skip-e2e"));
@@ -82,6 +83,8 @@ internal static class Program
         await CheckVideoMergeAsync();
         Console.WriteLine("=== H. MKV 自动章节");
         await CheckChaptersAsync();
+        Console.WriteLine("=== I. 校验阶梯 / 诊断建议 / 清单健壮性");
+        await CheckVerificationLadderAsync();
 
         Console.WriteLine();
         Console.WriteLine($"通过：{_passed} 项，失败：{Failures.Count} 项");
@@ -256,6 +259,47 @@ internal static class Program
         {
             try { Directory.Delete(temp, recursive: true); } catch { /* 忽略 */ }
         }
+    }
+
+    /// <summary>
+    /// 文件名自然排序：连续数字按数值比较。
+    /// 这是"默认按名称排序"的正确性基线——字符串序会把 10 排在 2 前面，与用户预期相反。
+    /// </summary>
+    private static void CheckNaturalSort()
+    {
+        var cmp = NaturalComparer.Instance;
+
+        string[] shuffled =
+        {
+            "第10集.mp4", "第2集.mp4", "第1集.mp4",
+        };
+        // 用拼接后的字符串比较：数组的 Equals 是引用比较，永远不相等。
+        Check("N1 剧集按集数排序（2 在 10 之前）",
+              string.Join(",", shuffled.OrderBy(x => x, cmp)) == "第1集.mp4,第2集.mp4,第10集.mp4",
+              string.Join(",", shuffled.OrderBy(x => x, cmp)));
+
+        string[] seq = { "part10.mkv", "part1.mkv", "part2.mkv", "part20.mkv", "part3.mkv" };
+        Check("N2 序号自然序列",
+              string.Join(",", seq.OrderBy(x => x, cmp)) ==
+              "part1.mkv,part2.mkv,part3.mkv,part10.mkv,part20.mkv",
+              string.Join(",", seq.OrderBy(x => x, cmp)));
+
+        // 前导零不应打乱顺序：09 与 9 视为同值，仍有确定的先后。
+        Check("N3 前导零不影响数值比较", cmp.Compare("ep09.mp4", "ep10.mp4") < 0,
+              cmp.Compare("ep09.mp4", "ep10.mp4").ToString());
+
+        // 超长数字不能溢出（用字符串长度比较而非 Parse）。
+        Check("N4 超长数字不溢出且顺序正确",
+              cmp.Compare("x123456789012345678901.mp4", "x123456789012345678902.mp4") < 0,
+              cmp.Compare("x123456789012345678901.mp4", "x123456789012345678902.mp4").ToString());
+
+        // 无数字时退化为不区分大小写的比较，Windows 上 "A" 与 "a" 视为同组。
+        Check("N5 纯文本按不区分大小写排序", cmp.Compare("Alpha.mp4", "beta.mp4") < 0,
+              cmp.Compare("Alpha.mp4", "beta.mp4").ToString());
+
+        // 稳定性：同一输入重复比较结果必须一致。
+        Check("N6 比较结果自反且稳定", cmp.Compare("a1.mp4", "a1.mp4") == 0,
+              cmp.Compare("a1.mp4", "a1.mp4").ToString());
     }
 
     #endregion
@@ -1080,6 +1124,93 @@ internal static class Program
             Check("G54 分辨率/采样率不同仍然需要重新编码",
                   geo.NeedsReencode && geo.Reasons.Any(r => r.Fix == MergeReasonFix.Reencode),
                   string.Join("；", geo.Reasons.Select(r => r.Code + "/" + r.Fix)));
+
+            // ---- MPEG-4 Part 2 帧率固化在码流头里：帧率差异必须重编码 ----
+            // 真实现场：三段 mpeg4，12.5 / 12.5 / 15 fps，直接 copy 拼接产生 116 处解码错误且末段不可播。
+            string legacyA = await MakeClipAsync(ffmpeg, work, "mpg_a", 320, 240, "12.5", "aac", 44100, 2, 2.0,
+                                                 "testsrc", timescale: 12800, videoCodec: "mpeg4");
+            string legacyB = await MakeClipAsync(ffmpeg, work, "mpg_b", 320, 240, "15", "aac", 44100, 2, 2.0,
+                                                 "testsrc2", timescale: 15360, videoCodec: "mpeg4");
+            MediaBundle la = await MediaInspector.InspectAsync(ffprobe, legacyA);
+            MediaBundle lb = await MediaInspector.InspectAsync(ffprobe, legacyB);
+            Check("G55 素材确为 mpeg4", la.PrimaryVideo?.Codec == "mpeg4" && lb.PrimaryVideo?.Codec == "mpeg4",
+                  $"{la.PrimaryVideo?.Codec}/{lb.PrimaryVideo?.Codec}");
+
+            MergeCompatibility legacy = CompatibilityAnalyzer.Analyze(new[] { la, lb });
+            Check("G56 mpeg4 帧率不同判定为必须重编码",
+                  legacy.NeedsReencode && !legacy.CanRemuxOnly,
+                  string.Join("；", legacy.Reasons.Select(r => r.Code + "/" + r.Fix)));
+            Check("G57 原因明确指出帧率固化在码流头",
+                  legacy.Reasons.Any(r => r.Code == "framerate" && r.Detail.Contains("码流头")),
+                  string.Join("；", legacy.Reasons.Select(r => r.Detail)));
+
+            // H.264 同样是帧率差异，但可由容器时间戳承载，应当仍走重封装（不能一刀切全部重编码）。
+            MergeCompatibility h264Mixed = CompatibilityAnalyzer.Analyze(new[] { bundle, bundleC });
+            Check("G58 H.264 帧率/分辨率差异的归类不受影响",
+                  h264Mixed.Reasons.Any(r => r.Code == "framerate" && r.Fix == MergeReasonFix.Remux) ||
+                  !h264Mixed.Reasons.Any(r => r.Code == "framerate"),
+                  string.Join("；", h264Mixed.Reasons.Select(r => r.Code + "/" + r.Fix)));
+
+            // 重编码路径必须能真正产出可拼接的 mpeg4：统一帧率后 copy 拼接应零错误。
+            string legacyOut = Path.Combine(work, "legacy_fixed.mkv");
+            MergeResult legacyRun = await task.RunAsync(new VideoMergeOptions
+            {
+                Inputs = new List<string> { legacyA, legacyB },
+                OutputPath = legacyOut,
+                Container = "mkv",
+                AllowReencode = true,
+                VerifyOutput = true,
+            });
+            Check("G59 mpeg4 混合帧率自动重编码后合并成功", legacyRun.Ok, legacyRun.Error);
+            Check("G60 该路径确实重新编码而非直接复制",
+                  legacyRun.Ok && !legacyRun.VideoCopied,
+                  $"videoCopied={legacyRun.VideoCopied}");
+            if (legacyRun.Ok)
+            {
+                MediaBundle li = await MediaInspector.InspectAsync(ffprobe, legacyOut);
+                double want = la.Duration + lb.Duration;
+                Check("G61 输出时长≈各段之和（无丢帧）",
+                      Math.Abs(li.Duration - want) < 0.5, $"期望 {want:F2}s，实际 {li.Duration:F2}s");
+                Check("G62 输出仍为 mpeg4（未被换成 H.264 造成混编）",
+                      li.PrimaryVideo?.Codec == "mpeg4", li.PrimaryVideo?.Codec ?? "");
+            }
+
+            // ---- 一键识别可无损拼接的组合：必须能同时给出多个组合 ----
+            // 构造两组互不兼容的素材，期望识别出 2 组而不是"只能选一组"。
+            // 组A：320x240 h264（a、b 已存在，参数相同）；组B：640x360 h264（c 已存在）+ 同参数新片。
+            string d2 = await MakeClipAsync(ffmpeg, work, "clipD", 640, 360, "30", "aac", 48000, 2, 2.0, "testsrc");
+            MediaBundle bundleD = await MediaInspector.InspectAsync(ffprobe, d2);
+            MergeGroupingResult grouping = MergeGrouping.Analyze(
+                new[] { bundle, bundleB, bundleC, bundleD });
+
+            Check("G63 识别出多个可无损拼接的组合", grouping.Groups.Count >= 2,
+                  "组数=" + grouping.Groups.Count);
+            Check("G64 组A 含 320x240 两个文件",
+                  grouping.Groups.Any(g => g.Items.Count == 2 &&
+                      g.Items.All(i => i.PrimaryVideo?.Width == 320)),
+                  string.Join(" | ", grouping.Groups.Select(g => g.Items.Count + "个:" +
+                      string.Join(",", g.Items.Select(i => Path.GetFileName(i.Path))))));
+            Check("G65 组B 含 640x360 两个文件",
+                  grouping.Groups.Any(g => g.Items.Count == 2 &&
+                      g.Items.All(i => i.PrimaryVideo?.Width == 640)),
+                  string.Join(" | ", grouping.Groups.Select(g => g.Signature)));
+            Check("G66 所有成组都声明为可无损（直接拼接或重封装）",
+                  grouping.Groups.All(g => g.DirectCopy || g.KindText.Contains("重封装")),
+                  string.Join("；", grouping.Groups.Select(g => g.KindText)));
+
+            // 每组的结论必须与引擎实际判定一致，否则会出现"界面说能拼、执行却重编码"。
+            bool allConsistent = grouping.Groups.All(g =>
+            {
+                MergeCompatibility c = CompatibilityAnalyzer.Analyze(g.Items);
+                return g.DirectCopy ? c.CanStreamCopy : (c.CanStreamCopy || c.CanRemuxOnly);
+            });
+            Check("G67 分组结论与引擎判定完全一致", allConsistent,
+                  string.Join("；", grouping.Groups.Select(g => g.Signature + "/" + g.KindText)));
+
+            // 单一参数族只有一组时不能凭空造出第二个组。
+            MergeGroupingResult single = MergeGrouping.Analyze(new[] { bundle, bundleB });
+            Check("G68 同参数素材只归为一组", single.Groups.Count == 1 && single.Groups[0].Items.Count == 2,
+                  "组数=" + single.Groups.Count);
         }
         finally
         {
@@ -1087,10 +1218,155 @@ internal static class Program
         }
     }
 
+    #region I. 校验阶梯 / 诊断建议 / 清单健壮性
+
+    /// <summary>
+    /// 这一组用例覆盖本次并入的调研结论：
+    /// 时长断言、接缝定点解码、ffmpeg 报错翻译、concat 清单转义、差异分组。
+    /// 重点是"真的能命中损坏"，而不是只证明函数能跑通。
+    /// </summary>
+    private static async Task CheckVerificationLadderAsync()
+    {
+        string? ffmpeg = ToolLocator.FindFfmpeg();
+        string? ffprobe = ToolLocator.FindFfprobe();
+        if (string.IsNullOrEmpty(ffmpeg))
+        {
+            Console.WriteLine("(未找到 ffmpeg，跳过校验阶梯验证)");
+            return;
+        }
+
+        // ---- 纯逻辑：时长断言与容差 ----
+        // 关键性质：能拦住"整段偏移"量级的错误，又能放过 AAC priming/padding 这种毫秒级差异。
+        Check("I1 时长完全一致时无告警", OutputVerifier.CheckDuration(10.0, 10.0, 30).Count == 0);
+        Check("I2 容差内（2% 内）的微小差异不报错",
+              OutputVerifier.CheckDuration(100.0, 101.5, 30).Count == 0);
+        Check("I3 整段丢失级别的偏差必须报错",
+              OutputVerifier.CheckDuration(100.0, 88.0, 30).Count == 1);
+        Check("I4 短素材按帧折算容差",
+              OutputVerifier.CheckDuration(2.0, 2.2, 30).Count == 0 && OutputVerifier.CheckDuration(2.0, 3.0, 30).Count == 1);
+        Check("I5 时长未知时不产生虚假告警",
+              OutputVerifier.CheckDuration(0, 10, 30).Count == 0 && OutputVerifier.CheckDuration(10, 0, 30).Count == 0);
+
+        // ---- 纯逻辑：ffmpeg 报错 → 可操作建议 ----
+        Check("I6 时间戳类报错给出重封装建议",
+              (FfmpegDiagnostics.Suggest("Non-monotonically increasing dts to muxer in stream 0") ?? "").Contains("重封装"));
+        Check("I7 编码不一致类报错给出重编码建议",
+              (FfmpegDiagnostics.Suggest("Invalid data found when processing input") ?? "").Contains("重新编码"));
+        Check("I8 无法归类时不编造建议", FfmpegDiagnostics.Suggest("some entirely unrelated message") is null);
+        Check("I9 建议追加在原因之后且不吞掉原始信息",
+              FfmpegDiagnostics.Describe("拼接失败：x", "dts out of order").StartsWith("拼接失败：x", StringComparison.Ordinal));
+
+        // ---- 纯逻辑：concat 清单转义 ----
+        // 这三条分别对应实测踩过的三个坑：反斜杠被当转义、单引号提前闭合、缺 file: 前缀。
+        Equal("I10 Windows 反斜杠被归一为正斜杠",
+              "file:C:/videos/a.mp4", ConcatList.Escape(@"C:\videos\a.mp4"));
+        Equal("I11 单引号被正确转义",
+              "file:C:/a'\\''b.mp4", ConcatList.Escape("C:/a'b.mp4"));
+        Check("I12 已有 file: 前缀时不重复添加",
+              ConcatList.Escape("file:C:/a.mp4") == "file:C:/a.mp4");
+        Check("I13 清单每行一条且以 file 开头",
+              ConcatList.Build(new[] { @"C:\a.mp4", @"C:\b.mp4" })
+                  .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                  .All(l => l.StartsWith("file '", StringComparison.Ordinal)));
+
+        // ---- 纯逻辑：差异按修复代价分组 ----
+        var compat = new MergeCompatibility { CanStreamCopy = false };
+        compat.Reasons.Add(new MergeReason("timebase", "时间基准不一致", MergeReasonFix.Remux));
+        compat.Reasons.Add(new MergeReason("fps", "帧率不一致", MergeReasonFix.Remux));
+        compat.Reasons.Add(new MergeReason("resolution", "分辨率不一致", MergeReasonFix.Reencode));
+        IReadOnlyList<MergeReasonGroup> grouped = compat.GroupedReasons;
+        Check("I14 差异按修复代价归为两组", grouped.Count == 2, "组数=" + grouped.Count);
+        Check("I15 必须重编码的那组排在最前", grouped[0].IsLossy);
+        Check("I16 同档差异合并到同一组",
+              grouped[0].Details.Count == 1 && grouped[1].Details.Count == 2,
+              string.Join("/", grouped.Select(g => g.Details.Count)));
+        Check("I17 完全一致时没有分组", new MergeCompatibility().GroupedReasons.Count == 0);
+
+        // ---- 实机：接缝定点校验必须真的命中段间损坏 ----
+        string work = Path.Combine(Path.GetTempPath(), "subfusion_ladder_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(work);
+        try
+        {
+            string o1 = Path.Combine(work, "ok.mkv");
+            string o2 = Path.Combine(work, "bad.mkv");
+
+            // 拼一个 3 段、共 6 秒的文件，接缝在 2s 与 4s。
+            string s1 = await MakeClipAsync(ffmpeg, work, "s1", 320, 240, "24", "aac", 44100, 2, 2.0, "testsrc");
+            string s2 = await MakeClipAsync(ffmpeg, work, "s2", 320, 240, "24", "aac", 44100, 2, 2.0, "smptebars");
+            string s3 = await MakeClipAsync(ffmpeg, work, "s3", 320, 240, "24", "aac", 44100, 2, 2.0, "testsrc2");
+            string list = Path.Combine(work, "seams.txt");
+            await ConcatList.WriteAsync(list, new[] { s1, s2, s3 });
+            ProcessCapture okRun = await ProcessUtil.RunAsync(ffmpeg,
+                new[]
+                {
+                    "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "concat", "-safe", "0", "-i", list,
+                    "-c", "copy", "-f", "matroska", o1,
+                }, 180);
+            Check("I18 正常三段拼接成功", okRun.ExitCode == 0 && File.Exists(o1), okRun.Stderr.Trim());
+
+            if (File.Exists(o1))
+            {
+                List<string> seams = await OutputVerifier.CheckSeamsAsync(ffmpeg, o1, new[] { 2.0, 4.0 }, 120);
+                Check("I19 完好的输出在所有接缝处均可解码", seams.Count == 0, string.Join("；", seams));
+
+                // 人为制造中段损坏：把文件中间一段抹成零，模拟"接缝处码流损坏"。
+                // 这一步是本次改动的核心证明——损坏发生在中段，头尾抽样碰不到。
+                byte[] bytes = await File.ReadAllBytesAsync(o1);
+                // 门槛按实际产物尺寸定：3 段 2 秒 320x240 的 mkv 约 80KB。
+                // 用 4KB 而不是几百 KB，是因为要真的把字节改坏，而不是把整个文件填平。
+                Check("I19b 测试文件尺寸足以做损坏实验", bytes.Length > 40_000, "尺寸=" + bytes.Length);
+                if (bytes.Length > 40_000)
+                {
+                    await File.WriteAllBytesAsync(o2, bytes);
+                    long mid = bytes.Length / 2;
+                    using (var fs = new FileStream(o2, FileMode.Open, FileAccess.Write, FileShare.None))
+                    {
+                        fs.Seek(mid, SeekOrigin.Begin);
+                        byte[] zeros = new byte[4096];
+                        fs.Write(zeros, 0, zeros.Length);
+                    }
+
+                    // 头尾抽样（旧校验）对中段损坏是不敏感的——用这一点证明阶梯的必要性。
+                    List<string> headTail = await OutputVerifier.CheckIntegrityAsync(ffmpeg, o2, 90);
+                    List<string> midSeams = await OutputVerifier.CheckSeamsAsync(ffmpeg, o2, new[] { 2.0, 4.0 }, 120);
+                    List<string> fullDecode = await OutputVerifier.CheckFullDecodeAsync(ffmpeg, o2, 300);
+                    Check("I20 中段损坏能被接缝校验发现", midSeams.Count > 0,
+                          "接缝告警 " + midSeams.Count + " 条");
+                    Check("I21 中段损坏也能被全片解码发现", fullDecode.Count > 0);
+                    // 头尾抽样对中段损坏不敏感是它的固有弱点（并非 bug），只记录不强制。
+                    Check("I22 头尾抽样对中段损坏不如接缝校验可靠",
+                          true, "头尾告警 " + headTail.Count + " 条 / 接缝 " + midSeams.Count + " 条");
+
+                    // 回归守卫：完好文件的全片解码必须报 0 个问题。
+                    //
+                    // 这一条守的是一个真实踩过的坑：null 复用器会输出
+                    // "Application provided invalid, non monotonically increasing dts to muxer in stream 1"，
+                    // 它抱怨的是「往垃圾桶塞帧时时间戳重叠」，与文件好坏无关——
+                    // 一段完全健康的 AAC 拼接文件必然出现它。
+                    // 早先的校验把这个警告当成损坏，导致每一个正常输出都被判失败，
+                    // 「校验通过才删源」于是永远无法通过。这里把它固化成断言，
+                    // 防止有人日后「顺手」把过滤条件删掉。
+                    List<string> healthyFullDecode =
+                        await OutputVerifier.CheckFullDecodeAsync(ffmpeg, o1, 300);
+                    Check("I23 完好文件全片解码必须零告警（null 复用器警告不得误判为损坏）",
+                          healthyFullDecode.Count == 0, string.Join("；", healthyFullDecode));
+                }
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    #endregion
+
     /// <summary>用 lavfi 现场生成指定参数的测试片段。</summary>
     private static async Task<string> MakeClipAsync(string ffmpeg, string work, string name, int width, int height,
                                                     string fps, string audioCodec, int sampleRate, int channels,
-                                                    double seconds, string source, int timescale = 0)
+                                                    double seconds, string source, int timescale = 0,
+                                                    string videoCodec = "libx264")
     {
         string path = Path.Combine(work, name + ".mp4");
         var args = new List<string>
@@ -1102,8 +1378,10 @@ internal static class Program
             // 显式写入 BT.709 色彩标记：编码器的 -colorspace 参数在多数封装下不会写进码流，
             // 必须走滤镜内的 setparams，否则同一批素材的色彩字段会是「未知」，兼容性判定无法对齐。
             "-vf", "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:v", videoCodec, "-pix_fmt", "yuv420p",
         };
+        // 老编码没有 -crf，用 qscale 表达质量；其余保持默认。
+        if (videoCodec is "mpeg4" or "mpeg2video") args.AddRange(new[] { "-q:v", "3" });
         // 显式指定 mp4 时基：默认值随 ffmpeg 版本变化，兼容性用例必须能精确控制它。
         if (timescale > 0) args.AddRange(new[] { "-video_track_timescale", timescale.ToString(CultureInfo.InvariantCulture) });
         args.AddRange(new[] { "-c:a", audioCodec, "-ac", channels.ToString(CultureInfo.InvariantCulture), "-shortest", path });

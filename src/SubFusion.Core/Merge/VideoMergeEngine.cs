@@ -208,11 +208,7 @@ public sealed class VideoMergeEngine
             Report(MergeStage.Merging, 82, "拼接输出…", bundles.Count, bundles.Count);
             string tempOutput = Path.Combine(tempDir, "merged" + plan.ContainerExtension);
             string listPath = Path.Combine(tempDir, "segments.txt");
-            var listText = new StringBuilder();
-            foreach (string segment in segmentPaths)
-                listText.Append("file '").Append(ConcatEscape(segment)).Append("'\n");
-            await File.WriteAllTextAsync(listPath, listText.ToString(), new UTF8Encoding(false), cancellationToken)
-                .ConfigureAwait(false);
+            await ConcatList.WriteAsync(listPath, segmentPaths, cancellationToken).ConfigureAwait(false);
 
             // 先按预计时间轴生成 ffmetadata，让章节在 concat 阶段直接嵌入输出；
             // 这样正常情况下无需再走「剥离章节 + 重写章节」两次整文件 remux。
@@ -236,7 +232,10 @@ public sealed class VideoMergeEngine
             // 同样先判定取消，避免把「被取消」误报成「拼接失败」。
             cancellationToken.ThrowIfCancellationRequested();
             if (mergeCode != 0 || !File.Exists(tempOutput))
-                return Fail(taskId, MergeStage.Merging, "拼接失败：" + LastLines(mergeError),
+                // 失败信息要能指导下一步：ffmpeg 的英文短语对使用者不构成信息，
+                // 这里按关键词附一条「可以试什么」，但不据此改变引擎的判定逻辑。
+                return Fail(taskId, MergeStage.Merging,
+                    FfmpegDiagnostics.Describe("拼接失败：" + LastLines(mergeError), mergeError),
                     diagnostics, startedAt);
 
             // 6) 探测最终输出 → 用实际时间轴校正章节 → 需要时重写章节
@@ -288,8 +287,33 @@ public sealed class VideoMergeEngine
                     issues.AddRange(ChapterWriter.Compare(exact, chapters, 0.08));
                     issues.AddRange(ChapterTimeline.Validate(chapters, actualDuration));
                 }
-                // OutputVerifier 不接受 CancellationToken：用带 token 的 Task.Run 包装，
-                // 取消时立即抛出，不让用户等待完整 integrity 探测结束。
+                // 校验阶梯：时长断言（已在上面 VerifyOutput 里做过）→ 接缝定点解码 → 头尾抽样。
+                // 先说清楚顺序为什么是这样：「时长对不对」最便宜，「接缝有没有坏」最可能命中，
+                // 「头尾有没有截断」覆盖收尾。三者互不替代，全都要过。
+                // 接缝位置由各输入段的时长累加得出，与章节时间轴用的是同一份数据。
+                var seams = new List<double>();
+                double cursor = 0;
+                for (int i = 0; i < durations.Count - 1; i++)
+                {
+                    cursor += Math.Max(0, durations[i]);
+                    if (cursor > 0) seams.Add(cursor);
+                }
+                if (seams.Count > 0)
+                {
+                    Report(MergeStage.Verifying, 97, "检查各段接缝…", 0, seams.Count);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    // OutputVerifier 不接受 CancellationToken：用带 token 的 Task.Run 包装，
+                    // 取消时立即抛出，不让用户等待整条校验链跑完。
+                    Task<List<string>> seamTask = Task.Run(
+                        () => OutputVerifier.CheckSeamsAsync(_tools.Ffmpeg, tempOutput, seams, 120),
+                        cancellationToken);
+                    List<string> seamIssues = await seamTask.ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    issues.AddRange(seamIssues);
+                    if (seamIssues.Count == 0)
+                        diagnostics.Add("[接缝] " + seams.Count + " 个拼接点全部可解码");
+                }
+
                 cancellationToken.ThrowIfCancellationRequested();
                 Task<List<string>> integrity = Task.Run(
                     () => OutputVerifier.CheckIntegrityAsync(_tools.Ffmpeg, tempOutput, 90), cancellationToken);
@@ -313,6 +337,51 @@ public sealed class VideoMergeEngine
                     diagnostics, startedAt);
             }
 
+            // 9) 确认输出完好后再删除源文件（仅在用户明确要求时）。
+            // 顺序不可颠倒：先证明输出可完整解码，再动源文件；任何一步存疑都保留源文件。
+            var deletedSources = new List<string>();
+            if (options.DeleteSourceAfterVerify)
+            {
+                // 删源前的最后一道闸：全片解码。
+                // 前面的接缝检查只覆盖「已知接缝」，全片解码还能兜住校验窗口之外的偶发损坏，
+                // 因为是不可逆操作，这里不接受任何近似。
+                Report(MergeStage.Verifying, 99, "全片解码校验（删除源文件前）…");
+                List<string> fullDecode = await OutputVerifier.CheckFullDecodeAsync(
+                    _tools.Ffmpeg, outputPath, 1800).ConfigureAwait(false);
+                issues.AddRange(fullDecode);
+
+                if (issues.Count > 0)
+                {
+                    // 校验不通过：绝不删源，按失败上报，输出文件保留供用户检查。
+                    return Fail(taskId, MergeStage.Verifying,
+                        "输出未通过全片校验，已保留源文件：" + string.Join("；", issues),
+                        diagnostics, startedAt);
+                }
+
+                diagnostics.Add("[删源] 全片解码校验通过，开始删除源文件");
+                foreach (string input in options.Inputs)
+                {
+                    string full = Path.GetFullPath(input);
+                    // 双保险：绝不删除与输出相同的文件，也不删除已经不存在的。
+                    if (string.Equals(full, outputPath, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!File.Exists(full)) continue;
+                    try
+                    {
+                        File.Delete(full);
+                        deletedSources.Add(full);
+                        diagnostics.Add("[删源] " + Path.GetFileName(full));
+                    }
+                    catch (Exception ex)
+                    {
+                        // 删不掉不算致命：输出已可用，源文件留着只是占用空间。
+                        notices.Add("源文件删除失败（可手动删除）：" + Path.GetFileName(full) + " — " + ex.Message);
+                        diagnostics.Add("[删源失败] " + full + "：" + ex.Message);
+                    }
+                }
+                if (deletedSources.Count > 0)
+                    notices.Add("已删除 " + deletedSources.Count + " 个源文件（输出校验通过后）");
+            }
+
             Report(MergeStage.Completed, 100, "合并完成");
             return new MergeResult
             {
@@ -327,6 +396,7 @@ public sealed class VideoMergeEngine
                 AudioCopied = plan.AudioCopy,
                 Notices = notices,
                 Diagnostics = diagnostics,
+                DeletedSources = deletedSources,
                 ElapsedSeconds = Formatting.UnixNow() - startedAt,
             };
         }
@@ -370,10 +440,6 @@ public sealed class VideoMergeEngine
             ElapsedSeconds = Formatting.UnixNow() - startedAt,
         };
 
-    /// <summary>concat demuxer 的单引号转义：' → '\''，反斜杠统一换正斜杠避免转义歧义。</summary>
-    private static string ConcatEscape(string path)
-        => path.Replace("\\", "/").Replace("'", "'\\''");
-
     private static List<string> ChapterTitles(VideoMergeOptions options, List<MediaBundle> bundles)
     {
         var titles = new List<string>(bundles.Count);
@@ -404,14 +470,11 @@ public sealed class VideoMergeEngine
                 "音频流数量不符（期望 {0}，实际 {1}）", plan.ExpectedAudioStreams, info.Audios.Count));
         if (info.Container.Size <= 0) issues.Add("输出文件为空");
 
+        // 时长断言走统一的实现：容差按「2% 与若干帧」取较大者，
+        // 与删源前的全片校验用的是同一套判定，不会出现两处标准不一致。
         double expected = inputs.Sum(i => Math.Max(0, i.Duration));
-        if (expected > 0)
-        {
-            double tolerance = Math.Max(1.5, expected * 0.02);
-            if (Math.Abs(actualDuration - expected) > tolerance)
-                issues.Add(string.Format(CultureInfo.InvariantCulture,
-                    "输出时长偏差过大（期望约 {0:F2}s，实际 {1:F2}s）", expected, actualDuration));
-        }
+        double fps = info.PrimaryVideo?.EffectiveFrameRate ?? 0;
+        issues.AddRange(OutputVerifier.CheckDuration(expected, actualDuration, fps));
 
         VideoStreamInfo? v = info.PrimaryVideo;
         if (v is not null)

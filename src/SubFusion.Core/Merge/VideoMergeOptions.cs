@@ -92,6 +92,13 @@ public sealed class VideoMergeOptions
     /// <summary>合并完成后校验输出（结构/时长/章节/解码完整性）。</summary>
     public bool VerifyOutput { get; set; } = true;
 
+    /// <summary>
+    /// 确认输出完好后删除源文件。
+    /// 这是不可逆操作，只有在 <see cref="VerifyOutput"/> 为 true 且全片解码校验通过时才允许执行；
+    /// 引擎会在删除前额外做一次「全片解码 + 时长比对」，而不只是开头 1 秒 / 结尾 2 秒的抽样。
+    /// </summary>
+    public bool DeleteSourceAfterVerify { get; set; }
+
     /// <summary>临时目录；null 表示每个任务使用独立临时目录（禁止任务间共享）。</summary>
     public string? TempDirectory { get; set; }
 
@@ -124,6 +131,9 @@ public sealed class VideoMergeOptions
             }
         }
         if (Inputs.Any(string.IsNullOrWhiteSpace)) errors.Add("输入列表中存在空路径");
+        // 删源是不可逆操作，必须同时开启输出校验，否则无法证明输出完好。
+        if (DeleteSourceAfterVerify && !VerifyOutput)
+            errors.Add("删除源文件必须在开启「校验输出」的前提下进行");
         string container = NormalizedContainer();
         if (container is not ("mkv" or "mp4"))
             errors.Add("不支持的输出容器：" + Container);

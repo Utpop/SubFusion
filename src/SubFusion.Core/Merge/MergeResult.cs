@@ -51,6 +51,9 @@ public sealed class MergeResult
     /// <summary>成功时的提示信息（例如音轨策略、章节修正）。</summary>
     public IReadOnlyList<string> Notices { get; init; } = Array.Empty<string>();
 
+    /// <summary>校验通过后已被删除的源文件路径；未启用删源时为空。</summary>
+    public IReadOnlyList<string> DeletedSources { get; init; } = Array.Empty<string>();
+
     /// <summary>失败原因（面向用户）。</summary>
     public string Error { get; init; } = "";
 

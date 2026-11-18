@@ -130,6 +130,26 @@ public sealed class NotEmptyToBoolConverter : IValueConverter
         => throw new NotSupportedException();
 }
 
+/// <summary>
+/// 「这组差异会导致重新编码」→ 语义画刷。
+/// 差异分组里，会重编码的那一组用警示色、无损失的那一组保持中性色——
+/// 让颜色本身回答"画质会不会变差"，而不是要求用户读完全部差异。
+/// </summary>
+public sealed class LossyToBrushConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language)
+    {
+        bool lossy = value is bool b && b;
+        string key = lossy ? "StatusWarningBrush" : "StatusInfoBrush";
+        return Application.Current.Resources.TryGetValue(key, out object? brush) && brush is not null
+            ? brush
+            : new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Gray);
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language)
+        => throw new NotSupportedException();
+}
+
 /// <summary>布尔值 → 图标字形（用于工具就绪/缺失、任务成功/失败等）。</summary>
 public sealed class BoolToGlyphConverter : IValueConverter
 {

@@ -436,6 +436,24 @@ G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine）�
 - **改章节**：`ChapterTimeline.Build` 是唯一时间轴算法；`ChapterWriter.ApplyAsync` 负责
   剥离旧章节 + 挂新章节（两步都 `-c copy`）。任何让章节写入触发重编码的改法都不接受。
 - **加测试**：优先加到 `SelfTest/Program.cs` 的对应分组，不要改 `Reference/reference.json`。
+  **坑**：某些编辑工具会保留文件 mtime，MSBuild 增量编译据此判定"未变化"而跳过重编译，
+  表现为"改了代码但自检项数没变"。判断是否真编译：`grep -c "G5x" bin/.../*.dll` 为 0 即未生效；
+  修复：`touch` 源文件后重建。字符串在 .NET DLL 里是 UTF-16，grep 需用 `-a` 或按 UTF-16 匹配。
+- **合并的帧率差异会不会破坏拼接，取决于编码器**：H.264/HEVC 把帧率放在 SPS/VPS，段间可共存，
+  重封装即可（29.97 vs 30 实测 0 错误）；而 MPEG-4 Part 2 / MPEG-1/2 / VC-1 等把帧率固化在码流头里，
+  帧率不同必须真正重编码，否则后段按前段帧间隔被误读，出现 "mcbpc damaged" 且该段不可播
+  （实测 116 处错误、时长缩水）。`CompatibilityAnalyzer.BitstreamFrameRateCodecs` 是这份清单的唯一出处，
+  新增编码器时同步更新，并保持 G55–G62 用例通过。
+- **改输出校验**：校验是**阶梯**，三级都要过，任何一级都不能省：
+  `OutputVerifier.CheckDuration`（时长断言，只用已有 ffprobe 结果，毫秒级）→
+  `OutputVerifier.CheckSeamsAsync`（按各段累计时长定位每个接缝，各解 2 秒）→
+  `OutputVerifier.CheckFullDecodeAsync`（全片解码，分钟级）。
+  「删源」这种不可逆动作**必须**要求最后一级通过；前两级只是让失败更早、更便宜地暴露。
+  **坑**：`[null @ ...]` 开头的行是 null 复用器在抱怨输出侧时间戳
+  （`Application provided invalid, non monotonically increasing dts to muxer`），
+  **不是文件损坏**——一份完全健康的两段 AAC 拼接输出，全片解码必然出现它。
+  两个解码校验都必须经 `DecodeErrorLines` 过滤，否则每个正常输出都会被判失败，
+  「校验通过才删源」永远无法通过、功能事实上被关闭。I23 用例守着这条。
 - **改 UI**：页面 ViewModel 不引用任何 WinUI 类型（只依赖 `IUiServices`）；
   新增异步事件处理器一律用 `CrashGuard.FireAndForget` 包住。
 - **加页面**：在 `Pages/` 建 `XxxPage.xaml`、在 `ViewModels/` 建 VM、在 `ShellViewModel.PageMeta`
@@ -447,6 +465,13 @@ G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine）�
 - **取消语义**：引擎在任何"把子进程结果当作失败"的判断前都必须先
   `ThrowIfCancellationRequested()`——被 Kill 的进程退出码没有意义，探测结果也会被记成"已取消"。
   漏了这一步，用户点取消会看到"输入文件无法读取"这类假故障。
+- **concat 清单**：一律走 `ConcatList`，不要在各处手拼 `file '...'`。
+  它统一处理三个会静默失败的坑：Windows 反斜杠（concat 解析器当转义符）、
+  路径里的单引号（写成 `'\''`）、以及 `file:` 前缀（缺了会报 `Impossible to open 'pipe:xyz.mp4'`）。
+  清单必须 UTF-8 无 BOM，带 BOM 会让第一行 `file` 指令失效。
+- **加测试时警惕"静默跳过"**：自检里的条件分支（如 `if (bytes.Length > N)`）若不满足，
+  用例会静默不执行——**总数不变且全绿**，看起来完全正常。改完自检必须确认项数真的增加了；
+  门槛值要按实际产物尺寸设定（3 段 2 秒 320x240 的 mkv 只有约 80KB，别写 200_000）。
 - **提交前必跑**：`dotnet build --no-incremental` + 完整自检 + 单 EXE 发布。
 
 ---

@@ -140,6 +140,12 @@ public sealed partial class VideoMergeViewModel : ObservableObject
 
     private bool _loading;
 
+    /// <summary>用户是否手动改过输出名；改过就不再自动覆盖。</summary>
+    private bool _outputNameUserEdited;
+
+    /// <summary>正在由代码写入输出名（自动生成），此时不应视为用户编辑。</summary>
+    private bool _suppressOutputNameEdit;
+
     public VideoMergeViewModel(IUiServices ui, AppSettings settings, TaskCenter tasks)
     {
         _ui = ui;
@@ -190,6 +196,12 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     [ObservableProperty] private bool autoChapters = true;
     [ObservableProperty] private bool verifyOutput = true;
     [ObservableProperty] private bool overwrite = true;
+
+    /// <summary>
+    /// 校验通过后删除源文件（不可逆）。默认关闭。
+    /// 勾选它会自动强制开启「校验输出」——没有校验就没有删除的前提。
+    /// </summary>
+    [ObservableProperty] private bool deleteSource;
     [ObservableProperty] private string outputPath = "";
     [ObservableProperty] private string outputDirectory = "";
     [ObservableProperty] private string outputName = "";
@@ -204,6 +216,12 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         OnPropertyChanged(nameof(ChaptersEnabled));
         SyncOutputExtension();
         if (!_loading) _ = RefreshAnalysisAsync();
+    }
+
+    /// <summary>关闭校验时同步取消删源，避免出现"未校验却要删源"的危险组合。</summary>
+    partial void OnVerifyOutputChanged(bool value)
+    {
+        if (!value && DeleteSource) DeleteSource = false;
     }
 
     partial void OnAutoChaptersChanged(bool value)
@@ -237,6 +255,9 @@ public sealed partial class VideoMergeViewModel : ObservableObject
 
     public ObservableCollection<string> Reasons { get; } = new();
 
+    /// <summary>按修复代价分组后的差异（警示色表示会重编码）。</summary>
+    public ObservableCollection<MergeReasonGroupViewModel> ReasonGroups { get; } = new();
+
     /// <summary>实际会采用的策略描述（无损拼接 / 统一重新编码 / 被禁止）。</summary>
     private void ApplyAnalysis(MergeCompatibility compatibility)
     {
@@ -245,6 +266,11 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         CanRemuxOnly = compatibility.CanRemuxOnly;
         Reasons.Clear();
         foreach (MergeReason reason in compatibility.Reasons) Reasons.Add(reason.Detail);
+        ReasonGroups.Clear();
+        // 分组只在"需要重编码"或"需要重封装"时才有意义；
+        // 完全一致时 Reasons 为空，分组自然也只有一个空的集合。
+        foreach (MergeReasonGroup group in compatibility.GroupedReasons)
+            ReasonGroups.Add(new MergeReasonGroupViewModel(group));
         HasReasons = Reasons.Count > 0;
 
         if (compatibility.CanStreamCopy)
@@ -406,6 +432,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         AllowReencode = _settings.MergeAllowReencode;
         AutoChapters = _settings.MergeChapters;
         VerifyOutput = _settings.MergeVerify;
+        DeleteSource = _settings.MergeDeleteSource && VerifyOutput;
         _loading = false;
         OnPropertyChanged(nameof(ChaptersAvailable));
         OnPropertyChanged(nameof(ChaptersEnabled));
@@ -424,6 +451,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         _settings.MergeAllowReencode = AllowReencode;
         _settings.MergeChapters = AutoChapters;
         _settings.MergeVerify = VerifyOutput;
+        _settings.MergeDeleteSource = DeleteSource;
         if (OutputDirectory.Length > 0) _settings.MergeOutputDir = OutputDirectory;
     }
 
@@ -486,12 +514,153 @@ public sealed partial class VideoMergeViewModel : ObservableObject
             string? dir = Path.GetDirectoryName(added[0].Path);
             if (!string.IsNullOrEmpty(dir)) OutputDirectory = dir;
         }
-        if (OutputName.Length == 0 && added.Count > 0)
-            OutputName = SuggestOutputName();
+        // 未手动改过名字时，按当前首段重新生成：清空后再拖入新视频也能得到新名字。
+        // 默认按名称自然排序（第2集 < 第10集），用户拖拽或上移/下移后以手动顺序为准。
+        SortInputsByName();
+
+        if (!_outputNameUserEdited && OutputName.Length == 0 && Inputs.Count > 0)
+            SetOutputName(SuggestOutputName(), userEdit: false);
         SyncOutputExtension();
 
-        await ProbeInputsAsync(added);
+        await ProbeInputsAsync(Inputs.ToList());
         await RefreshAnalysisAsync();
+
+        // 已有多个文件时顺手算一次分组，用户不必再点一次按钮就能看到哪些能无损拼。
+        if (Inputs.Count > 1 && !IsRunning) await GroupByCompatibilityAsync(showDialog: false);
+    }
+
+    /// <summary>
+    /// 按文件名自然排序（"第2集" 排在 "第10集" 之前）。
+    /// 排序只调整顺序，不移除任何项；合并顺序即列表顺序，因此排完要重新分析。
+    /// </summary>
+    private void SortInputsByName()
+    {
+        if (Inputs.Count < 2) return;
+        List<MergeInputViewModel> ordered = Inputs
+            .OrderBy(i => Path.GetFileName(i.Path), NaturalComparer.Instance)
+            .ToList();
+        for (int target = 0; target < ordered.Count; target++)
+        {
+            int current = Inputs.IndexOf(ordered[target]);
+            if (current != target) Inputs.Move(current, target);
+        }
+    }
+
+    [RelayCommand]
+    private void SortByName()
+    {
+        if (IsRunning || Inputs.Count < 2) return;
+        SortInputsByName();
+        if (!_outputNameUserEdited) SetOutputName(SuggestOutputName(), userEdit: false);
+        SyncOutputExtension();
+        _ = RefreshAnalysisAsync();
+    }
+
+    #endregion
+
+    #region 无损分组
+
+    [ObservableProperty] private bool grouping;
+    [ObservableProperty] private string groupSummary = "";
+    [ObservableProperty] private bool hasGroups;
+
+    /// <summary>「可无损拼接的组合」结果，供界面直接渲染。</summary>
+    public ObservableCollection<MergeGroupViewModel> Groups { get; } = new();
+
+    [RelayCommand]
+    private async Task DetectGroupsAsync() => await GroupByCompatibilityAsync(showDialog: true);
+
+    /// <summary>
+    /// 一键识别可无损拼接的组合。
+    /// 所有判定都来自 Core 的 CompatibilityAnalyzer，界面不自行推测，
+    /// 保证「这里显示能拼」与「引擎实际会走 copy 拼接」是同一个标准。
+    /// </summary>
+    private async Task GroupByCompatibilityAsync(bool showDialog)
+    {
+        if (IsRunning || Grouping || Inputs.Count < 2) return;
+        Grouping = true;
+        try
+        {
+            VideoMergeTask? task = await EnsureTaskAsync(CancellationToken.None);
+            if (task is null)
+            {
+                if (showDialog) await _ui.ShowErrorAsync("未找到 ffprobe，无法分析媒体参数。");
+                return;
+            }
+
+            List<MediaBundle> bundles = await task.ProbeAsync(Inputs.Select(i => i.Path).ToList());
+            MergeGroupingResult result = MergeGrouping.Analyze(bundles);
+
+            _ui.RunOnUiThread(() =>
+            {
+                Groups.Clear();
+                int index = 1;
+                foreach (MergeGroup group in result.Groups.Where(g => g.Items.Count > 1))
+                {
+                    var vm = new MergeGroupViewModel
+                    {
+                        Title = "组合 " + index++,
+                        Signature = group.Signature,
+                        KindText = group.KindText,
+                        ReasonText = group.ReasonText,
+                        CountText = group.Items.Count + " 个 · 合计 " + group.TotalDurationText,
+                    };
+                    foreach (MediaBundle b in group.Items) vm.Files.Add(Path.GetFileName(b.Path));
+                    Groups.Add(vm);
+                }
+
+                HasGroups = Groups.Count > 0;
+                GroupSummary = BuildGroupSummary(result);
+                Grouping = false;
+            });
+        }
+        catch (Exception ex)
+        {
+            Grouping = false;
+            GroupSummary = "分组失败：" + ex.Message;
+            if (showDialog) await _ui.ShowErrorAsync(GroupSummary);
+        }
+    }
+
+    private string BuildGroupSummary(MergeGroupingResult result)
+    {
+        int total = Inputs.Count;
+        if (Groups.Count == 0)
+            return "未能找出可无损拼接的组合：这些文件的编码参数互不相同，合并时需要重编码。";
+
+        int mergeable = result.GroupedCount;
+        var parts = new List<string>();
+        if (result.DirectGroups > 0) parts.Add(result.DirectGroups + " 组可直接拼接");
+        if (result.RemuxGroups > 0) parts.Add(result.RemuxGroups + " 组需重封装对齐");
+
+        string text = "找到 " + Groups.Count + " 组可无损拼接的组合（" + string.Join("，", parts) + "），"
+                    + "覆盖 " + mergeable + " / " + total + " 个文件。";
+        int leftover = total - mergeable;
+        if (leftover > 0)
+            text += " 其余 " + leftover + " 个无法与任何组合无损拼接，合并它们需要重编码。";
+        return text;
+    }
+
+    /// <summary>把某一组设为当前合并内容：只保留该组文件，顺序按组内顺序。</summary>
+    [RelayCommand]
+    private void UseGroup(MergeGroupViewModel? group)
+    {
+        if (group is null || IsRunning) return;
+        List<MergeInputViewModel> keep = new();
+        foreach (string name in group.Files)
+        {
+            MergeInputViewModel? hit = Inputs.FirstOrDefault(
+                i => string.Equals(Path.GetFileName(i.Path), name, StringComparison.OrdinalIgnoreCase));
+            if (hit is not null) keep.Add(hit);
+        }
+        if (keep.Count < 2) return;
+
+        Inputs.Clear();
+        foreach (MergeInputViewModel item in keep) Inputs.Add(item);
+        _selected.Clear();
+        if (!_outputNameUserEdited) SetOutputName(SuggestOutputName(), userEdit: false);
+        SyncOutputExtension();
+        _ = RefreshAnalysisAsync();
     }
 
     private async Task ProbeInputsAsync(IReadOnlyList<MergeInputViewModel> items)
@@ -518,11 +687,33 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         }
     }
 
+    /// <summary>由代码写入输出名并抑制"用户编辑"标记，避免自动生成的名字被当成手动输入。</summary>
+    private void SetOutputName(string value, bool userEdit)
+    {
+        _suppressOutputNameEdit = !userEdit;
+        try { OutputName = value; }
+        finally { _suppressOutputNameEdit = false; }
+        if (!userEdit) _outputNameUserEdited = false;
+    }
+
     private string SuggestOutputName()
     {
         if (Inputs.Count == 0) return "merged";
         string first = Inputs[0].DefaultChapterTitle;
         return Inputs.Count == 1 ? first + "_merged" : first + "_等" + Inputs.Count + "个视频";
+    }
+
+    /// <summary>
+    /// 列表顺序被拖拽改变后调用。合并顺序即 Core 的输入顺序，
+    /// 会直接影响兼容性判定与章节时间轴，必须重新分析。
+    /// </summary>
+    public void OnInputOrderChanged()
+    {
+        if (IsRunning) return;
+        // 用户没有手动改过名字时，让输出名跟上新的首段，避免名字与顺序脱节。
+        if (!_outputNameUserEdited) SetOutputName(SuggestOutputName(), userEdit: false);
+        SyncOutputExtension();
+        _ = RefreshAnalysisAsync();
     }
 
     public void SetSelection(IEnumerable<MergeInputViewModel> selected)
@@ -555,7 +746,11 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         HasReasons = false;
         StrategyText = "添加视频后自动分析";
         StrategyDetail = "";
+        // 输出名必须一起清空。否则下次拖入新视频时 "OutputName.Length == 0" 不成立，
+        // 会继续沿用上一批视频生成的名字（表现为"输出文件名不会重新写入"）。
+        SetOutputName("", userEdit: false);
         OutputPath = "";
+        _outputNameUserEdited = false;
     }
 
     [RelayCommand(CanExecute = nameof(CanMoveUp))]
@@ -603,6 +798,8 @@ public sealed partial class VideoMergeViewModel : ObservableObject
 
     partial void OnOutputNameChanged(string value)
     {
+        // 只有用户真正编辑（非初始化/自动生成/清空）才标记为手动改名。
+        if (!_loading && !_suppressOutputNameEdit) _outputNameUserEdited = value.Trim().Length > 0;
         OutputPath = CombineOutput();
         StartCommand.NotifyCanExecuteChanged();
     }
@@ -635,7 +832,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         string? folder = await _ui.PickFolderAsync("选择输出目录");
         if (string.IsNullOrEmpty(folder)) return;
         OutputDirectory = folder;
-        if (OutputName.Length == 0) OutputName = SuggestOutputName();
+        if (OutputName.Length == 0) SetOutputName(SuggestOutputName(), userEdit: false);
     }
 
     [RelayCommand]
@@ -700,6 +897,8 @@ public sealed partial class VideoMergeViewModel : ObservableObject
                 : new List<string>(),
             Overwrite = Overwrite,
             VerifyOutput = VerifyOutput,
+            // 删源必须先证明输出完好，因此这里强制与校验联动。
+            DeleteSourceAfterVerify = DeleteSource && VerifyOutput,
         };
 
     [RelayCommand(CanExecute = nameof(CanStart))]

@@ -40,6 +40,36 @@ public sealed class MergeCompatibility
 
     public List<MergeReason> Reasons { get; } = new();
     public string PrimaryReason => Reasons.Count == 0 ? "" : Reasons[0].Detail;
+
+    /// <summary>
+    /// 按「消除这条差异需要付什么代价」分组后的差异。
+    /// UI 直接平铺 Reasons 时，一长串并列的差异会让人看不出重点——
+    /// 用户真正想知道的是「有没有画质损失」，而这取决于其中有没有 Reencode 档。
+    /// 实测一份四段素材能列出十几条差异，分组后通常只剩两组。
+    /// </summary>
+    public IReadOnlyList<MergeReasonGroup> GroupedReasons =>
+        Reasons
+            .GroupBy(r => r.Fix)
+            .OrderBy(g => g.Key)          // Reencode 在前：更严重的问题优先呈现
+            .Select(g => new MergeReasonGroup(
+                g.Key,
+                g.Key == MergeReasonFix.Reencode ? "必须重新编码" : "可用无损重封装解决",
+                g.Key == MergeReasonFix.Reencode
+                    ? "下列差异无法只靠重封装消除，需要重新编码视频："
+                    : "下列差异只需重封装对齐时间轴，视频不会被重新编码：",
+                g.Select(r => r.Detail).ToList()))
+            .ToList();
+}
+
+/// <summary>一组修复代价相同的差异，用于分组展示。</summary>
+public sealed record MergeReasonGroup(
+    MergeReasonFix Fix,
+    string Title,
+    string Intro,
+    IReadOnlyList<string> Details)
+{
+    /// <summary>true 表示这一组会让视频重新编码（会影响画质，界面应使用警示色）。</summary>
+    public bool IsLossy => Fix == MergeReasonFix.Reencode;
 }
 
 /// <summary>
@@ -50,6 +80,25 @@ public sealed class MergeCompatibility
 public static class CompatibilityAnalyzer
 {
     private const double FrameRateTolerance = 0.01;
+
+    /// <summary>
+    /// 把帧率 / 场率写在码流头里的编码器。
+    /// 这类码流的拼接不能只对齐容器时间戳：解码器按段内头部解释每一帧，
+    /// 帧率不同却直接 concat 时后段会按前段的帧间隔被误读，产生大面积
+    /// "mcbpc damaged" / "marker does not match f_code" 并导致该段无法播放。
+    /// 实测：mpeg4 12.5fps + mpeg4 15fps 直接 copy 拼接 = 116 处解码错误、总时长 12.0s 掉到 12.09s 且末段不可播；
+    /// 只重编码帧率不同的那一段后 = 0 错误。
+    /// H.264 / HEVC 的帧率由 SPS/VPS 承载且段间可共存，不在此列（29.97 与 30 混拼实测 0 错误）。
+    /// </summary>
+    private static readonly HashSet<string> BitstreamFrameRateCodecs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "mpeg4", "mpeg2video", "mpeg1video", "msmpeg4v2", "msmpeg4v3",
+        "vc1", "wmv3", "flv1", "h263", "rv30", "rv40", "theora",
+    };
+
+    /// <summary>该编码的帧率是否固化在码流头里（因此帧率差异不能用重封装消除）。</summary>
+    public static bool FrameRateStoredInBitstream(string codec)
+        => BitstreamFrameRateCodecs.Contains((codec ?? "").Trim());
 
     public static MergeCompatibility Analyze(IReadOnlyList<MediaBundle> bundles)
     {
@@ -90,12 +139,21 @@ public static class CompatibilityAnalyzer
                         $"分辨率不一致（{name} 为 {v.SizeText}，第一个为 {v0.SizeText}）"));
                 if (!Eq(v.PixFmt, v0.PixFmt))
                     reasons.Add(new MergeReason("pixfmt", $"像素格式不一致（{name} 为 {v.PixFmt}，第一个为 {v0.PixFmt}）"));
-                // 帧率差异不会破坏 concat：每段各自携带时间戳，重封装后仍能正确累加。
-                // 实测 29.97 与 30 同时间基准拼接，解码零错误、总时长正确，因此不触发重编码。
+                // 帧率差异的处理取决于编码器是否把帧率写进码流头：
+                // - H.264/HEVC：时间戳由容器承载，重封装即可对齐（29.97 与 30 混拼实测 0 错误）；
+                // - MPEG-4 Part 2 / MPEG-1/2 / VC-1 等：帧率在码流头里，只能真正重编码才能改写，
+                //   否则后段会按前段帧间隔被误读，出现解码错误且该段无法播放（实测 116 处错误）。
                 if (Math.Abs(v.EffectiveFrameRate - v0.EffectiveFrameRate) > FrameRateTolerance)
-                    reasons.Add(new MergeReason("framerate", string.Format(CultureInfo.InvariantCulture,
+                {
+                    bool legacy = FrameRateStoredInBitstream(v.Codec) || FrameRateStoredInBitstream(v0.Codec);
+                    string detail = string.Format(CultureInfo.InvariantCulture,
                         "帧率不一致（{0} 为 {1:0.###}，第一个为 {2:0.###}）",
-                        name, v.EffectiveFrameRate, v0.EffectiveFrameRate), MergeReasonFix.Remux));
+                        name, v.EffectiveFrameRate, v0.EffectiveFrameRate);
+                    if (legacy)
+                        detail += "；该编码把帧率写在码流头里，必须重编码才能统一";
+                    reasons.Add(new MergeReason("framerate", detail,
+                        legacy ? MergeReasonFix.Reencode : MergeReasonFix.Remux));
+                }
                 // 时间基准必须对齐，否则 concat 会产生非单调 DTS 与错位时长（实测 44 处错误、11s 变 8.59s）。
                 // 但重封装到同一时基即可解决，不需要重新编码。
                 if (!Eq(v.TimeBase, v0.TimeBase))

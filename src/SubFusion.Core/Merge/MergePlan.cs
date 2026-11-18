@@ -22,7 +22,18 @@ public sealed class MergePlan
 
     public string VideoCodec { get; private init; } = "libx264";
     public string VideoCodecOutputName { get; private init; } = "h264";
+
+    /// <summary>
+    /// 重编码后要写回的像素宽高比。空表示按方形像素处理。
+    /// 老片常见非方形像素（如 136:135），重编码若被压成 1:1，
+    /// 输出的 SAR 会与未重编码的段不一致，下次合并又会触发一次无谓的重编码。
+    /// 这里保留第一段输入的 SAR，让重编码段与保留段保持同一显示比例。
+    /// </summary>
+    public string TargetSar { get; private init; } = "";
     public int Crf { get; private init; } = 20;
+
+    /// <summary>老编码（mpeg4/mpeg2video）的质量档，由 CRF 折算：CRF 20 ≈ q2，越高越差。</summary>
+    public int QScale => Math.Clamp(Crf - 18, 2, 10);
     public string Preset { get; private init; } = "medium";
     public string PixelFormat { get; private init; } = "yuv420p";
     public bool TonemapToSdr { get; private init; }
@@ -72,12 +83,21 @@ public sealed class MergePlan
         bool audioCopy = streamCopy && options.Audio != AudioStrategy.Reencode && audios.Count > 0;
         if (options.Audio == AudioStrategy.Copy && streamCopy) audioCopy = audios.Count > 0;
 
+        // 用户没指定时，按输入编码选择同族编码器：
+        // 同一批素材重编码后仍保持同一编码，输出才能与未重编码的段一致，
+        // 也避免把 MPEG-4 Part 2 之类老编码悄悄换成 H.264 造成混编。
+        string sourceCodec = videos.Count > 0 ? videos[0].Codec : "";
         string codec = options.VideoCodec.Length > 0
             ? options.VideoCodec
-            : videos.Count > 0 && string.Equals(videos[0].Codec, "hevc", StringComparison.OrdinalIgnoreCase)
-                ? "libx265" : "libx264";
+            : string.Equals(sourceCodec, "hevc", StringComparison.OrdinalIgnoreCase) ? "libx265"
+            : string.Equals(sourceCodec, "mpeg4", StringComparison.OrdinalIgnoreCase) ? "mpeg4"
+            : string.Equals(sourceCodec, "mpeg2video", StringComparison.OrdinalIgnoreCase) ? "mpeg2video"
+            : "libx264";
         string outputCodecName = codec.Contains("265", StringComparison.Ordinal) ||
-                                 codec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ? "hevc" : "h264";
+                                 codec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ? "hevc"
+            : codec is "mpeg4" or "mpeg2video" ? codec : "h264";
+        // 老编码不认 -crf/-preset，走固定质量档（qscale），下面按此分支拼参数。
+        bool legacyCodec = codec is "mpeg4" or "mpeg2video";
 
         // 能力回退：ffmpeg 未编译对应编码器时退回 libx264，避免生成必然失败的命令行。
         bool fallbackX265 = false, fallbackNvenc = false;
@@ -102,6 +122,14 @@ public sealed class MergePlan
             : (videos.Any(v => v.PixFmt.Contains("10", StringComparison.Ordinal) || v.IsHdr)
                 ? "yuv420p10le" : "yuv420p");
 
+        // 只有在重编码（streamCopy=false）且输入 SAR 非方形时才需要写回 SAR。
+        string targetSar = "";
+        if (!streamCopy && videos.Count > 0)
+        {
+            string sourceSar = videos[0].Sar;
+            if (sourceSar.Length > 0 && sourceSar is not ("0:1" or "1:1")) targetSar = sourceSar;
+        }
+
         bool hdrMixed = videos.Select(v => v.HdrFormat).Distinct(StringComparer.Ordinal).Count() > 1;
         bool tonemap = hdrMixed && videos.Any(v => v.IsHdr) && videos.Any(v => !v.IsHdr);
 
@@ -121,6 +149,7 @@ public sealed class MergePlan
             Crf = options.Crf,
             Preset = options.Preset,
             PixelFormat = pixFmt,
+            TargetSar = targetSar,
             TonemapToSdr = tonemap,
             AudioCodec = audioCodec,
             AudioBitrateKbps = options.AudioBitrateKbps,
@@ -223,14 +252,27 @@ public sealed class MergePlan
 
         string chain = BuildVideoFilter(bundle);
         cmd.AddRange(new[] { "-vf", chain });
-        cmd.AddRange(new[] { "-c:v", VideoCodec, "-preset", Preset, "-pix_fmt", PixelFormat });
-        // libx265 不接受 -crf（那是 x264/nvenc 的选项），必须走 -x265-params
-        if (VideoCodec.Contains("265", StringComparison.Ordinal))
-            cmd.AddRange(new[] { "-x265-params", "crf=" + Crf.ToString(CultureInfo.InvariantCulture) });
+        cmd.AddRange(new[] { "-c:v", VideoCodec, "-pix_fmt", PixelFormat });
+        if (VideoCodec is "mpeg4" or "mpeg2video")
+        {
+            // MPEG-Part2 系编码器没有 -crf/-preset，用 qscale 表达同等质量档（2 最好，31 最差）。
+            cmd.AddRange(new[] { "-q:v", QScale.ToString(CultureInfo.InvariantCulture) });
+        }
         else
-            cmd.AddRange(new[] { "-crf", Crf.ToString(CultureInfo.InvariantCulture) });
+        {
+            cmd.AddRange(new[] { "-preset", Preset });
+            // libx265 不接受 -crf（那是 x264/nvenc 的选项），必须走 -x265-params
+            if (VideoCodec.Contains("265", StringComparison.Ordinal))
+                cmd.AddRange(new[] { "-x265-params", "crf=" + Crf.ToString(CultureInfo.InvariantCulture) });
+            else
+                cmd.AddRange(new[] { "-crf", Crf.ToString(CultureInfo.InvariantCulture) });
+        }
         if (TargetFrameRate > 0)
             cmd.AddRange(new[] { "-r", TargetFrameRate.ToString("0.###", CultureInfo.InvariantCulture) });
+        // 老编码的 SAR 由码流头携带，仅靠 setsar 滤镜不够，必须同时写容器侧的 -aspect，
+        // 否则输出会被 ffprobe 报成约分后的近似值（如 100:99），与保留段对不上。
+        if (TargetSar.Length > 0)
+            cmd.AddRange(new[] { "-aspect", TargetSar });
 
 
         cmd.AddRange(new[] { "-c:a", AudioCodec,
@@ -273,7 +315,8 @@ public sealed class MergePlan
 
         // 最终统一像素格式前截断到偶数尺寸，保证 yuv420p 编码不会因奇数宽高失败。
         if (Is420()) parts.Add("scale=trunc(iw/2)*2:trunc(ih/2)*2");
-        parts.Add("setsar=1");
+        // 有目标 SAR 时写回原像素宽高比，否则按方形像素输出。
+        parts.Add(TargetSar.Length > 0 ? "setsar=" + TargetSar.Replace(':', '/') : "setsar=1");
         parts.Add("format=" + PixelFormat);
         parts.Add(ColorMetadataFilter(bundle));
         return string.Join(",", parts);

@@ -98,6 +98,9 @@ public sealed class AppSettings
     public string MergeContainer { get => _mergeContainer; set => SetValue(ref _mergeContainer, value); }
     private bool _mergeAllowReencode = true;
     public bool MergeAllowReencode { get => _mergeAllowReencode; set => SetValue(ref _mergeAllowReencode, value); }
+    // 默认关闭：删除源文件不可逆，必须是用户显式选择加入的行为。
+    private bool _mergeDeleteSource;
+    public bool MergeDeleteSource { get => _mergeDeleteSource; set => SetValue(ref _mergeDeleteSource, value); }
     private string _mergeCodec = "";
     public string MergeCodec { get => _mergeCodec; set => SetValue(ref _mergeCodec, value); }
     private double _mergeCrf = 20;
@@ -169,6 +172,7 @@ public sealed class AppSettings
             MergeAudio = OneOf(Read("merge_audio"), "Auto", "Auto", "Reencode", "Copy");
             MergeChapters = Bool("merge_chapters", true);
             MergeVerify = Bool("merge_verify", true);
+            MergeDeleteSource = Bool("merge_delete_source", false);
             MergeOutputDir = Read("merge_outdir") ?? "";
 
             LastDir = Read("last_dir") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -225,6 +229,7 @@ public sealed class AppSettings
                 _config.Set("merge_audio", MergeAudio);
                 _config.Set("merge_chapters", MergeChapters);
                 _config.Set("merge_verify", MergeVerify);
+                _config.Set("merge_delete_source", MergeDeleteSource);
                 _config.Set("merge_outdir", MergeOutputDir);
 
                 _config.Set("last_dir", LastDir);
