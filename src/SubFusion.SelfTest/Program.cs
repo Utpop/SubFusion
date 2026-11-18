@@ -85,6 +85,8 @@ internal static class Program
         await CheckChaptersAsync();
         Console.WriteLine("=== I. 校验阶梯 / 诊断建议 / 清单健壮性");
         await CheckVerificationLadderAsync();
+        Console.WriteLine("=== J. 只重编码少数派");
+        await CheckPartialReencodeAsync();
 
         Console.WriteLine();
         Console.WriteLine($"通过：{_passed} 项，失败：{Failures.Count} 项");
@@ -1353,6 +1355,126 @@ internal static class Program
                           healthyFullDecode.Count == 0, string.Join("；", healthyFullDecode));
                 }
             }
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    #endregion
+
+    #region J. 只重编码少数派
+
+    /// <summary>
+    /// 「一批同源文件 + 一个参数不同的文件」时，只重编码那个不同的，
+    /// 其余保持逐比特不变。这是用户最初抱怨的核心问题：
+    /// 为微小差异把全部素材重压一遍，既慢又掉画质。
+    /// </summary>
+    private static async Task CheckPartialReencodeAsync()
+    {
+        string? ffmpeg = ToolLocator.FindFfmpeg();
+        string? ffprobe = ToolLocator.FindFfprobe();
+        if (string.IsNullOrEmpty(ffmpeg) || string.IsNullOrEmpty(ffprobe))
+        {
+            Console.WriteLine("(未找到 ffmpeg/ffprobe，跳过部分重编码验证)");
+            return;
+        }
+
+        string work = Path.Combine(Path.GetTempPath(), "subfusion_partial_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(work);
+        try
+        {
+            // 两段同参数 + 一段不同分辨率，模拟"多数派 + 少数派"。
+            string p1 = await MakeClipAsync(ffmpeg, work, "pa", 320, 240, "24", "aac", 44100, 2, 2.0, "testsrc");
+            string p2 = await MakeClipAsync(ffmpeg, work, "pb", 320, 240, "24", "aac", 44100, 2, 2.0, "smptebars");
+            string p3 = await MakeClipAsync(ffmpeg, work, "pc", 640, 360, "24", "aac", 44100, 2, 2.0, "testsrc2");
+
+            List<MediaBundle> bundles = await MediaInspector.InspectManyAsync(ffprobe,
+                new[] { p1, p2, p3 }, CancellationToken.None, 4, 60);
+            Check("J1 三段素材全部探测成功", bundles.All(b => b.Success),
+                  string.Join("；", bundles.Where(b => !b.Success).Select(b => b.Error)));
+
+            PartialReencodePlan plan = PartialReencodeAnalyzer.Analyze(bundles);
+            Check("J2 识别出「保留两段、只编码一段」的方案", plan.IsPartial,
+                  plan.Describe());
+            Check("J3 少数派正是分辨率不同的那段",
+                  plan.ReencodeIndices.Count == 1 && plan.ReencodeIndices[0] == 2,
+                  string.Join(",", plan.ReencodeIndices));
+            Check("J4 保留段保持原始顺序",
+                  plan.ReferenceIndices.SequenceEqual(new[] { 0, 1 }),
+                  string.Join(",", plan.ReferenceIndices));
+
+            // 全部一致时不应该"凭空"拆出少数派。
+            Check("J5 参数全一致时不存在部分重编码方案",
+                  !PartialReencodeAnalyzer.Analyze(bundles.Take(2).ToList()).IsPartial);
+
+            // 只有两段时不值得部分重编码（留一段 = 没收益）。
+            Check("J6 两段素材不启用部分重编码",
+                  !PartialReencodeAnalyzer.Analyze(new[] { bundles[0], bundles[2] }).IsPartial);
+
+            // ---- 端到端：真的只编码了一段，且输出完好 ----
+            string output = Path.Combine(work, "partial_out.mkv");
+            var tools = await FfmpegTools.ResolveAsync(ffmpeg, ffprobe);
+            var task = new VideoMergeTask(tools);
+            MergeResult result = await task.RunAsync(new VideoMergeOptions
+            {
+                Inputs = new List<string> { p1, p2, p3 },
+                OutputPath = output,
+                Container = "mkv",
+                AllowReencode = true,
+                VerifyOutput = true,
+                PartialReencode = true,
+                Overwrite = true,
+            });
+            Check("J7 部分重编码合并成功", result.Ok, result.Error);
+
+            bool onlyOneEncoded = result.Diagnostics.Any(l => l.StartsWith("[部分重编码] 重编码", StringComparison.Ordinal))
+                                  && !result.Diagnostics.Any(l => l.StartsWith("[片段] segment_", StringComparison.Ordinal));
+            Check("J8 只编码了一段，没有退回全量重编码", onlyOneEncoded,
+                  string.Join(" | ", result.Diagnostics.Where(l => l.Contains("重编码") || l.Contains("片段")).Take(6)));
+
+            // 保留段必须逐比特不变：这是"部分重编码"唯一的意义所在。
+            bool keptIntact = result.Diagnostics.Count(l => l.Contains("[部分重编码] 重编码")) == 1;
+            Check("J9 保留段未被重新编码", keptIntact,
+                  string.Join(" | ", result.Diagnostics.Where(l => l.StartsWith("[部分重编码]", StringComparison.Ordinal))));
+
+            if (result.Ok)
+            {
+                MediaBundle outInfo = await MediaInspector.InspectAsync(ffprobe, output);
+                double expected = bundles.Sum(b => b.Duration);
+                Check("J10 输出时长为三段之和", Math.Abs(outInfo.Duration - expected) < 0.5,
+                      string.Format(CultureInfo.InvariantCulture, "期望 {0:F2}s，实际 {1:F2}s", expected, outInfo.Duration));
+                Check("J11 输出分辨率统一到保留段（320x240）而非最大（640x360）",
+                      outInfo.PrimaryVideo is { Width: 320, Height: 240 },
+                      outInfo.PrimaryVideo?.SizeText ?? "");
+                List<string> decode = await OutputVerifier.CheckFullDecodeAsync(ffmpeg, output, 300);
+                Check("J12 部分重编码的输出可完整解码（含接缝）", decode.Count == 0, string.Join("；", decode));
+            }
+
+            // 关闭开关时必须退回全量重编码，否则等于选项无效。
+            string output2 = Path.Combine(work, "full_out.mkv");
+            MergeResult full = await task.RunAsync(new VideoMergeOptions
+            {
+                Inputs = new List<string> { p1, p2, p3 },
+                OutputPath = output2,
+                Container = "mkv",
+                AllowReencode = true,
+                VerifyOutput = false,
+                PartialReencode = false,
+                Overwrite = true,
+            });
+            Check("J13 关闭开关后走全量重编码",
+                  full.Ok && full.Diagnostics.Count(l => l.StartsWith("[片段] segment_", StringComparison.Ordinal)) == 3,
+                  full.Error + " | 片段数=" + full.Diagnostics.Count(l => l.StartsWith("[片段]", StringComparison.Ordinal)));
+
+            // 自动降级默认关闭：正常合并时不该出现任何降级日志。
+            Check("J14 默认不触发自动降级",
+                  !result.Diagnostics.Any(l => l.StartsWith("[降级]", StringComparison.Ordinal)),
+                  string.Join(" | ", result.Diagnostics.Where(l => l.Contains("降级"))));
+            // 开关打开但拼接本来就成功时，同样不该触发降级（降级只在真失败时发生）。
+            Check("J15 开启降级开关但拼接成功时也不降级",
+                  full.Diagnostics.Count(l => l.StartsWith("[降级]", StringComparison.Ordinal)) == 0);
         }
         finally
         {

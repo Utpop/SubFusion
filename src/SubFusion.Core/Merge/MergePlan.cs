@@ -175,6 +175,52 @@ public sealed class MergePlan
         return created;
     }
 
+    /// <summary>
+    /// 为「只重编码少数派」创建方案：统一到保留段的参数，而不是全部输入的最大值。
+    ///
+    /// 与 <see cref="Create"/> 的差别只有一点、但很关键：目标参数取自**保留段**。
+    /// 若仍按全部输入取最大分辨率/最高帧率，重编码出来的片段就与保留段对不上，
+    /// 拼接结果依然是坏的。这里把保留段当作基准，少数派向它靠拢。
+    /// </summary>
+    public static MergePlan CreateForPartial(VideoMergeOptions options,
+                                             IReadOnlyList<MediaBundle> referenceBundles,
+                                             IReadOnlyList<MediaBundle> allBundles,
+                                             FfmpegCapabilities? capabilities = null)
+    {
+        // 先用保留段当作「全部输入」构造一遍：目标分辨率/帧率/采样率/编码器都会收敛到保留段。
+        // streamCopy 传 false，因为这里要拿到完整的重编码参数。
+        MergePlan referencePlan = Create(options, referenceBundles, streamCopy: false, capabilities);
+
+        // 章节与预期流数量仍按全部输入计算；其余编码参数保持不变。
+        var plan = new MergePlan
+        {
+            VideoCopy = false,
+            // 音频跟着视频一起重编码，避免「视频重编码、音频 copy」在采样率不一致时错位。
+            AudioCopy = false,
+            ContainerExtension = referencePlan.ContainerExtension,
+            TargetWidth = referencePlan.TargetWidth,
+            TargetHeight = referencePlan.TargetHeight,
+            TargetFrameRate = referencePlan.TargetFrameRate,
+            Fit = referencePlan.Fit,
+            VideoCodec = referencePlan.VideoCodec,
+            VideoCodecOutputName = referencePlan.VideoCodecOutputName,
+            Crf = referencePlan.Crf,
+            Preset = referencePlan.Preset,
+            PixelFormat = referencePlan.PixelFormat,
+            TargetSar = referencePlan.TargetSar,
+            TonemapToSdr = referencePlan.TonemapToSdr,
+            AudioCodec = referencePlan.AudioCodec,
+            AudioBitrateKbps = referencePlan.AudioBitrateKbps,
+            SampleRate = referencePlan.SampleRate,
+            ChannelLayout = referencePlan.ChannelLayout,
+            ExpectedVideoStreams = 1,
+            ExpectedAudioStreams = allBundles.Any(b => b.HasAudio) ? 1 : 0,
+        };
+        plan.Notes.AddRange(referencePlan.Notes);
+        plan.Notes.Add("仅重编码偏离多数派的片段，其余片段保持原样（不重新编码）");
+        return plan;
+    }
+
     public string Describe()
     {
         var parts = new List<string>();
@@ -223,6 +269,32 @@ public sealed class MergePlan
             "-f", "matroska", outputPath,
         })
         .ToList();
+    }
+
+    /// <summary>
+    /// 把任意一个已存在的媒体文件重封装为统一时基的 matroska（全程 -c copy）。
+    ///
+    /// 与 <see cref="BuildRemuxCommand"/> 的差别：那个需要 <see cref="MediaBundle"/> 来判断音轨，
+    /// 这个用可选的流选择符 <c>-map 0:a:0?</c>，没有音轨时也不会失败。
+    /// 用途是「只重编码少数派」时把保留段也统一到同一容器与时基——
+    /// 重编码产出的片段必然是 mkv/1:1000，而原文件可能是 mp4/1:12288，
+    /// 不统一这两项，拼接结果依然不可用（实测会被兼容性判定直接拦下）。
+    /// 注意：这一步是纯复制，视频码流逐比特不变，不属于「重新编码」。
+    /// </summary>
+    public List<string> BuildRemuxCommandForFile(string inputPath, string outputPath, string ffmpeg = "ffmpeg")
+    {
+        const int trackTimescale = 90000;
+        return new List<string>
+        {
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1",
+            "-i", inputPath,
+            "-map", "0:v:0",
+            // 问号表示"存在才映射"：部分输入没有音轨时不会因此失败。
+            "-map", "0:a:0?",
+            "-c", "copy",
+            "-video_track_timescale", trackTimescale.ToString(CultureInfo.InvariantCulture),
+            "-f", "matroska", outputPath,
+        };
     }
 
     /// <summary>

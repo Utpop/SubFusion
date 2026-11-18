@@ -126,9 +126,25 @@ public sealed class VideoMergeEngine
             if (bundles.Any(b => b.Audios.Count > 1))
                 notices.Add("多音轨输入只合并第一条音轨，其余音轨不进入输出");
 
-            var plan = MergePlan.Create(options, bundles, streamCopy || remuxOnly, _tools.Capabilities);
+            // 全量重编码是最后手段：先看能不能只动少数派。
+            // 真实素材更常见的是「一批同源文件 + 一个参数不同的文件」，
+            // 为那一个文件把其余全部重压一遍，既费时又有画质损失。
+            PartialReencodePlan partial = (streamCopy || remuxOnly || !options.AllowReencode || !options.PartialReencode)
+                ? new PartialReencodePlan()
+                : PartialReencodeAnalyzer.Analyze(bundles);
+
+            var plan = partial.IsPartial
+                ? MergePlan.CreateForPartial(options,
+                    partial.ReferenceIndices.Select(i => bundles[i]).ToList(), bundles, _tools.Capabilities)
+                : MergePlan.Create(options, bundles, streamCopy || remuxOnly, _tools.Capabilities);
             notices.AddRange(plan.Notes);
             diagnostics.Add("[方案] " + plan.Describe());
+            if (partial.IsPartial)
+            {
+                notices.Add("已保留 " + partial.ReferenceIndices.Count + " 段原样，仅重编码 " +
+                            partial.ReencodeIndices.Count + " 段参数不一致的输入");
+                diagnostics.Add("[部分重编码] " + partial.Describe());
+            }
 
             List<string> titles = ChapterTitles(options, bundles);
             List<double> durations = bundles.Select(b => Math.Max(0, b.Duration)).ToList();
@@ -169,39 +185,108 @@ public sealed class VideoMergeEngine
                     segmentPaths.Add(segment);
                 }
             }
-            else
+            else if (partial.IsPartial)
             {
-                // 先落到「合并中」，再启动第一个编码器：在 ffmpeg 的首条 -progress 到达之前，
-                // 阶段栏不应继续显示上一阶段的「判定合并方案…」。
-                Report(MergeStage.Merging, 5, "统一重新编码输入片段…", 0, bundles.Count);
-                double done = 0;
-                for (int i = 0; i < bundles.Count; i++)
+                // 只重编码少数派：保留段直接用原文件，被编码的段对齐到保留段的参数。
+                // 编码完成后会重新探测一次核实（见下面的 ValidatePartial），核实不过自动退回全量。
+                var reencodeSet = new HashSet<int>(partial.ReencodeIndices);
+                Report(MergeStage.Merging, 5, "重编码参数不一致的片段…", 0, partial.ReencodeIndices.Count);
+                var produced = new Dictionary<int, string>();
+                int doneCount = 0;
+                foreach (int i in partial.ReencodeIndices)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     string segment = Path.Combine(tempDir,
-                        "segment_" + i.ToString("D3", CultureInfo.InvariantCulture) + ".mkv");
+                        "partial_" + i.ToString("D3", CultureInfo.InvariantCulture) + ".mkv");
                     int index = i;
-                    double offset = done;
                     double length = Math.Max(0.1, durations[i]);
                     (int code, string error) = await FfmpegRunner.RunFfmpegAsync(
                         plan.BuildSegmentCommand(bundles[i], segment, _tools.Ffmpeg),
                         length,
                         (percent, speed, eta) => Report(MergeStage.Merging,
-                            (offset + percent / 100.0 * length) / Math.Max(0.1, totalDuration) * 80.0,
-                            string.Format(CultureInfo.InvariantCulture, "重新编码 {0}/{1}：{2}",
-                                index + 1, bundles.Count, Path.GetFileName(bundles[index].Path)),
-                            index, bundles.Count, speed, eta),
+                            5 + (doneCount + percent / 100.0) / Math.Max(1, partial.ReencodeIndices.Count) * 70.0,
+                            string.Format(CultureInfo.InvariantCulture, "重编码 {0}/{1}：{2}",
+                                doneCount + 1, partial.ReencodeIndices.Count,
+                                Path.GetFileName(bundles[index].Path)),
+                            doneCount, partial.ReencodeIndices.Count, speed, eta),
                         cancellationToken).ConfigureAwait(false);
-                    // 取消时 ffmpeg 被强杀，返回码不可信：先判定取消，再判定失败。
                     cancellationToken.ThrowIfCancellationRequested();
                     if (code != 0 || !File.Exists(segment))
                         return Fail(taskId, MergeStage.Merging,
-                            string.Format(CultureInfo.InvariantCulture, "第 {0} 个片段编码失败：{1}", i + 1,
+                            string.Format(CultureInfo.InvariantCulture, "第 {0} 段重编码失败：{1}", i + 1,
                                 LastLines(error)), diagnostics, startedAt);
-                    diagnostics.Add("[片段] " + Path.GetFileName(segment) + " ← " + Path.GetFileName(bundles[i].Path));
-                    segmentPaths.Add(segment);
-                    done += length;
+                    diagnostics.Add("[部分重编码] 重编码 " + Path.GetFileName(bundles[i].Path));
+                    produced[i] = segment;
+                    doneCount++;
                 }
+
+                // 统一容器与时基：重编码产出的片段必然是 mkv/1:1000，而保留段可能是 mp4/1:12288。
+                // 这两项不统一，拼接依然不可用（核实会直接拦下）。
+                // 保留段走的是 -c copy 重封装，视频码流逐比特不变，不算「重新编码」。
+                Report(MergeStage.Merging, 76, "统一容器与时间基准…", 0, bundles.Count);
+                for (int i = 0; i < bundles.Count; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    string source = reencodeSet.Contains(i) ? produced[i] : bundles[i].Path;
+                    string unified = Path.Combine(tempDir,
+                        "unified_" + i.ToString("D3", CultureInfo.InvariantCulture) + ".mkv");
+                    int index = i;
+                    (int ucode, string uerror) = await FfmpegRunner.RunFfmpegAsync(
+                        plan.BuildRemuxCommandForFile(source, unified, _tools.Ffmpeg),
+                        durations[i],
+                        (percent, _, _) => Report(MergeStage.Merging,
+                            76 + percent / 100.0 * 2.0,
+                            string.Format(CultureInfo.InvariantCulture, "统一时间基准 {0}/{1}",
+                                index + 1, bundles.Count),
+                            index, bundles.Count),
+                        cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (ucode != 0 || !File.Exists(unified))
+                        return Fail(taskId, MergeStage.Merging,
+                            string.Format(CultureInfo.InvariantCulture, "第 {0} 段统一时间基准失败：{1}", i + 1,
+                                LastLines(uerror)), diagnostics, startedAt);
+                    if (!reencodeSet.Contains(i))
+                        diagnostics.Add("[保留段] " + Path.GetFileName(bundles[i].Path) + " 未重新编码（仅重封装）");
+                    segmentPaths.Add(unified);
+                }
+
+                // 核实：重编码段的实际参数必须真的能与保留段拼接。
+                // 这一步不能省——编码器未必如实兑现 -r / -pix_fmt / SAR 等请求，
+                // 而「以为统一了、其实没统一」产出的坏文件比直接失败更糟。
+                Report(MergeStage.Merging, 78, "核实重编码结果…");
+                var probeTargets = new List<(int Index, string Path)>();
+                for (int i = 0; i < bundles.Count; i++)
+                    if (reencodeSet.Contains(i)) probeTargets.Add((i, segmentPaths[i]));
+                List<string> verifyIssues = await ValidatePartialAsync(segmentPaths, cancellationToken)
+                    .ConfigureAwait(false);
+                if (verifyIssues.Count > 0)
+                {
+                    // 核实不过就退回全量重编码。「以为统一了、其实没统一」产出的坏文件
+                    // 比多花点时间重编码糟得多，所以这里不做任何宽容。
+                    diagnostics.Add("[部分重编码] 核实未通过，退回全量重编码：" + string.Join("；", verifyIssues));
+                    notices.Add("重编码结果与保留段仍不一致，已自动改为全量重编码（" +
+                                verifyIssues[0] + "）");
+                    segmentPaths.Clear();
+                    partial = new PartialReencodePlan();
+                    plan = MergePlan.Create(options, bundles, streamCopy: false, _tools.Capabilities);
+                    MergeResult? fallbackFailure = await ReencodeAllSegmentsAsync(taskId, plan, bundles, durations,
+                        totalDuration, tempDir, segmentPaths, diagnostics, startedAt, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (fallbackFailure is not null) return fallbackFailure;
+                }
+                else
+                {
+                    diagnostics.Add("[部分重编码] 核实通过：" + string.Join("，",
+                        probeTargets.Select(t => Path.GetFileName(t.Path))));
+                }
+            }
+            else
+            {
+                // 全量重编码：所有输入统一到同一参数后再拼接。
+                MergeResult? failure = await ReencodeAllSegmentsAsync(taskId, plan, bundles, durations,
+                    totalDuration, tempDir, segmentPaths, diagnostics, startedAt, cancellationToken)
+                    .ConfigureAwait(false);
+                if (failure is not null) return failure;
             }
 
             // 5) 拼接。章节与拼接合成一条命令，避免多一次整文件重写。
@@ -231,6 +316,38 @@ public sealed class VideoMergeEngine
                 cancellationToken).ConfigureAwait(false);
             // 同样先判定取消，避免把「被取消」误报成「拼接失败」。
             cancellationToken.ThrowIfCancellationRequested();
+
+            // 无损拼接（全 copy）失败时的可选降级。
+            //
+            // 默认关闭，理由：参数全部一致时 concat 极少失败，真失败通常是文件本身有问题，
+            // 自动重编码只会把「立刻报错」变成「跑很久最后仍失败」。
+            // 但需要「无论如何都要出片」时，重编码确实能救回一部分参数看起来一致、
+            // 实际码流却有差异的素材，所以做成显式开关而不是完全不做。
+            if ((mergeCode != 0 || !File.Exists(tempOutput)) && options.AutoFallbackOnFailure && plan.VideoCopy)
+            {
+                diagnostics.Add("[降级] 无损拼接失败，改用重新编码重试：" + LastLines(mergeError));
+                notices.Add("无损拼接失败，已自动改用重新编码重试（" + LastLines(mergeError) + "）");
+
+                segmentPaths.Clear();
+                plan = MergePlan.Create(options, bundles, streamCopy: false, _tools.Capabilities);
+                diagnostics.Add("[降级] 方案改为 " + plan.Describe());
+                MergeResult? reencodeFailure = await ReencodeAllSegmentsAsync(taskId, plan, bundles, durations,
+                    totalDuration, tempDir, segmentPaths, diagnostics, startedAt, cancellationToken)
+                    .ConfigureAwait(false);
+                if (reencodeFailure is not null) return reencodeFailure;
+
+                await ConcatList.WriteAsync(listPath, segmentPaths, cancellationToken).ConfigureAwait(false);
+                tempOutput = Path.Combine(tempDir, "merged_retry" + plan.ContainerExtension);
+                Report(MergeStage.Merging, 82, "重新拼接输出…", bundles.Count, bundles.Count);
+                (mergeCode, mergeError) = await FfmpegRunner.RunFfmpegAsync(
+                    plan.BuildConcatCommand(listPath, tempDir, tempOutput, _tools.Ffmpeg, null),
+                    totalDuration,
+                    (percent, speed, eta) => Report(MergeStage.Merging, 82 + percent / 100.0 * 12.0,
+                        "重新拼接输出…", bundles.Count, bundles.Count, speed, eta),
+                    cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             if (mergeCode != 0 || !File.Exists(tempOutput))
                 // 失败信息要能指导下一步：ffmpeg 的英文短语对使用者不构成信息，
                 // 这里按关键词附一条「可以试什么」，但不据此改变引擎的判定逻辑。
@@ -494,6 +611,93 @@ public sealed class VideoMergeEngine
             plan.SampleRate > 0 && a.SampleRate != plan.SampleRate)
             issues.Add(string.Format(CultureInfo.InvariantCulture,
                 "输出采样率为 {0} Hz，预期 {1} Hz", a.SampleRate, plan.SampleRate));
+        return issues;
+    }
+
+    /// <summary>上报进度（供独立方法使用；与 MergeAsync 内局部 Report 行为一致）。</summary>
+    private void Send(MergeStage stage, double percent, string message, int step = 0, int steps = 0,
+                      double speed = 0, double? eta = null)
+        => _progress?.Report(new MergeProgress(stage, Math.Clamp(percent, 0, 100), message,
+            step, steps, speed, eta));
+
+    /// <summary>
+    /// 全量重编码：把每个输入统一编码成一个中间中间片段并追加到 <paramref name="segmentPaths"/>。
+    /// 返回 null 表示成功；返回非 null 表示应当直接终止任务（已构造好失败结果）。
+    /// 抽成独立方法是为了让「部分重编码核实失败 → 退回全量」这条路径复用同一段逻辑，
+    /// 而不是复制一遍编码循环（两份循环迟早会改歪其中一份）。
+    /// </summary>
+    private async Task<MergeResult?> ReencodeAllSegmentsAsync(string taskId, MergePlan plan,
+        List<MediaBundle> bundles, List<double> durations, double totalDuration, string tempDir,
+        List<string> segmentPaths, List<string> diagnostics, double startedAt,
+        CancellationToken cancellationToken)
+    {
+        // 先落到「合并中」，再启动第一个编码器：在 ffmpeg 的首条 -progress 到达之前，
+        // 阶段栏不应继续显示上一阶段的「判定合并方案…」。
+        // 这里直接写 _progress（而不是调用 MergeAsync 内的局部函数 Report），
+        // 因为本方法是独立方法，取不到那个局部函数。
+        Send(MergeStage.Merging, 5, "统一重新编码输入片段…", 0, bundles.Count);
+        double done = 0;
+        for (int i = 0; i < bundles.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string segment = Path.Combine(tempDir,
+                "segment_" + i.ToString("D3", CultureInfo.InvariantCulture) + ".mkv");
+            int index = i;
+            double offset = done;
+            double length = Math.Max(0.1, durations[i]);
+            (int code, string error) = await FfmpegRunner.RunFfmpegAsync(
+                plan.BuildSegmentCommand(bundles[i], segment, _tools.Ffmpeg),
+                length,
+                    (percent, speed, eta) => Send(MergeStage.Merging,
+                    (offset + percent / 100.0 * length) / Math.Max(0.1, totalDuration) * 80.0,
+                    string.Format(CultureInfo.InvariantCulture, "重新编码 {0}/{1}：{2}",
+                        index + 1, bundles.Count, Path.GetFileName(bundles[index].Path)),
+                    index, bundles.Count, speed, eta),
+                cancellationToken).ConfigureAwait(false);
+            // 取消时 ffmpeg 被强杀，返回码不可信：先判定取消，再判定失败。
+            cancellationToken.ThrowIfCancellationRequested();
+            if (code != 0 || !File.Exists(segment))
+                return Fail(taskId, MergeStage.Merging,
+                    string.Format(CultureInfo.InvariantCulture, "第 {0} 个片段编码失败：{1}", i + 1,
+                        LastLines(error)), diagnostics, startedAt);
+            diagnostics.Add("[片段] " + Path.GetFileName(segment) + " ← " + Path.GetFileName(bundles[i].Path));
+            segmentPaths.Add(segment);
+            done += length;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 核实「部分重编码」的结果：把保留段与重编码段一起重新探测，
+    /// 确认它们现在真的能无损拼接。
+    ///
+    /// 为什么必须重新探测而不是相信命令参数：编码器未必如实兑现请求——
+    /// 例如 -r 在某些格式下只改容器时间戳、SAR 可能被约分成近似值、
+    /// 老编码的像素格式可能被静默替换。这些偏差都会让拼接产出坏文件，
+    /// 所以判定一律以「重新探测到的实际参数」为准。
+    /// </summary>
+    /// <param name="segmentPaths">
+    /// 即将真正送进 concat 的那串文件（顺序即拼接顺序）。
+    /// 必须探测**这些文件本身**，而不是原始输入：重编码段与保留段都已重封装到统一容器与时基，
+    /// 拿原始输入去比对会拿 mp4/1:12288 与 mkv/1:1000 比较，必然误判为不一致。
+    /// </param>
+    /// <returns>问题描述列表；空列表表示核实通过。</returns>
+    private async Task<List<string>> ValidatePartialAsync(List<string> segmentPaths,
+                                                          CancellationToken cancellationToken)
+    {
+        var issues = new List<string>();
+        if (segmentPaths.Count == 0) return issues;
+
+        List<MediaBundle> probed = await MediaInspector.InspectManyAsync(_tools.Ffprobe!, segmentPaths,
+            cancellationToken, 4, 60).ConfigureAwait(false);
+        foreach (MediaBundle b in probed.Where(x => !x.Success))
+            issues.Add("无法读取待拼接片段 " + Path.GetFileName(b.Path) + "：" + b.Error);
+        if (issues.Count > 0) return issues;
+
+        // 与引擎最终执行用的是同一个判定函数，避免"这里通过、那里重编码"的两套标准。
+        MergeCompatibility compatibility = CompatibilityAnalyzer.Analyze(probed);
+        if (!compatibility.CanStreamCopy && !compatibility.CanRemuxOnly)
+            issues.AddRange(compatibility.Reasons.Select(r => r.Detail));
         return issues;
     }
 

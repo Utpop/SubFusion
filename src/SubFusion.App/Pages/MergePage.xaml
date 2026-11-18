@@ -389,6 +389,18 @@
                                    Text="章节标题在左侧每个文件的「章节标题」里编辑；时间轴由 Core 按最终输出实际时长归一化，写入后回读校验。" />
                         <CheckBox Content="完成后校验输出文件（流结构 / 时长 / 章节 / 解码）"
                                   IsChecked="{x:Bind ViewModel.VerifyOutput, Mode=TwoWay}" />
+
+                        <CheckBox Content="只重新编码参数不一致的片段"
+                                  IsChecked="{x:Bind ViewModel.PartialReencode, Mode=TwoWay}"
+                                  ToolTipService.ToolTip="大多数片段参数一致时，只重编码不合群的那几个，其余保持原样（不重新编码）。默认开启。" />
+                        <TextBlock Style="{StaticResource CaptionStyle}"
+                                   Text="开启后：能找到「多数派」时只重编码少数片段，保留片段画质逐比特不变。重编码后会重新核对这些片段确实能拼接；核对不通过会自动退回全量重编码。" />
+
+                        <CheckBox Content="无损拼接失败时自动改用重新编码重试"
+                                  IsChecked="{x:Bind ViewModel.AutoFallbackOnFailure, Mode=TwoWay}"
+                                  ToolTipService.ToolTip="默认关闭。参数一致时直接拼接极少失败，真失败通常是源文件本身有问题。" />
+                        <TextBlock Style="{StaticResource CaptionStyle}"
+                                   Text="关闭时（推荐）：直接拼接失败会立刻报错并说明原因，不浪费一次长时间重编码。开启后：失败时自动重编码整批素材再试一次，耗时显著增加。" />
                     </StackPanel>
                 </Border>
             </StackPanel>

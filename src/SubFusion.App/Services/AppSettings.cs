@@ -101,6 +101,12 @@ public sealed class AppSettings
     // 默认关闭：删除源文件不可逆，必须是用户显式选择加入的行为。
     private bool _mergeDeleteSource;
     public bool MergeDeleteSource { get => _mergeDeleteSource; set => SetValue(ref _mergeDeleteSource, value); }
+    // 默认开启：只重编码偏离多数派的片段，其余保留原样；核对不过会自动退回全量重编码。
+    private bool _mergePartialReencode = true;
+    public bool MergePartialReencode { get => _mergePartialReencode; set => SetValue(ref _mergePartialReencode, value); }
+    // 默认关闭：参数一致时 concat 极少失败，真失败更可能是文件本身有问题。
+    private bool _mergeAutoFallback;
+    public bool MergeAutoFallback { get => _mergeAutoFallback; set => SetValue(ref _mergeAutoFallback, value); }
     private string _mergeCodec = "";
     public string MergeCodec { get => _mergeCodec; set => SetValue(ref _mergeCodec, value); }
     private double _mergeCrf = 20;
@@ -173,6 +179,8 @@ public sealed class AppSettings
             MergeChapters = Bool("merge_chapters", true);
             MergeVerify = Bool("merge_verify", true);
             MergeDeleteSource = Bool("merge_delete_source", false);
+            MergePartialReencode = Bool("merge_partial_reencode", true);
+            MergeAutoFallback = Bool("merge_auto_fallback", false);
             MergeOutputDir = Read("merge_outdir") ?? "";
 
             LastDir = Read("last_dir") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -230,6 +238,8 @@ public sealed class AppSettings
                 _config.Set("merge_chapters", MergeChapters);
                 _config.Set("merge_verify", MergeVerify);
                 _config.Set("merge_delete_source", MergeDeleteSource);
+                _config.Set("merge_partial_reencode", MergePartialReencode);
+                _config.Set("merge_auto_fallback", MergeAutoFallback);
                 _config.Set("merge_outdir", MergeOutputDir);
 
                 _config.Set("last_dir", LastDir);

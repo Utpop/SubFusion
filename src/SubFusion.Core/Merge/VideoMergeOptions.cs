@@ -93,6 +93,23 @@ public sealed class VideoMergeOptions
     public bool VerifyOutput { get; set; } = true;
 
     /// <summary>
+    /// 只重编码少数派：当一批输入里有大部分彼此兼容、少数几个不兼容时，
+    /// 保留兼容的那批原样，只把少数几个重编码到它们的参数。
+    /// 默认开启——同样能成功合并，但保留段是逐比特不变的，耗时与画质都明显更好。
+    /// 重编码后会重新探测并核实，核实不通过则自动退回全量重编码，所以开着不影响正确性。
+    /// </summary>
+    public bool PartialReencode { get; set; } = true;
+
+    /// <summary>
+    /// 无损拼接失败时自动改用重新编码重试。
+    ///
+    /// 默认**关闭**：参数全部一致时 concat 极少失败，一旦失败通常是文件本身有问题，
+    /// 自动重编码只会把「明显报错」变成「跑了很久最后仍失败」。
+    /// 需要「无论如何都要出片」的场景可以显式打开。
+    /// </summary>
+    public bool AutoFallbackOnFailure { get; set; }
+
+    /// <summary>
     /// 确认输出完好后删除源文件。
     /// 这是不可逆操作，只有在 <see cref="VerifyOutput"/> 为 true 且全片解码校验通过时才允许执行；
     /// 引擎会在删除前额外做一次「全片解码 + 时长比对」，而不只是开头 1 秒 / 结尾 2 秒的抽样。

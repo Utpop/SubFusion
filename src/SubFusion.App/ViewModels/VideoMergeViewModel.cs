@@ -202,6 +202,20 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     /// 勾选它会自动强制开启「校验输出」——没有校验就没有删除的前提。
     /// </summary>
     [ObservableProperty] private bool deleteSource;
+
+    /// <summary>
+    /// 只重编码偏离多数派的片段，其余保留原样。默认开启。
+    /// 好处是同样能合并成功，但保留的段逐比特不变，耗时与画质都明显更好。
+    /// </summary>
+    [ObservableProperty] private bool partialReencode = true;
+
+    /// <summary>
+    /// 无损拼接失败时自动改用重新编码重试。默认关闭：
+    /// 参数一致时 concat 极少失败，真失败通常是文件本身有问题，
+    /// 自动重编码只会把「立刻报错」变成「跑很久仍失败」。
+    /// </summary>
+    [ObservableProperty] private bool autoFallbackOnFailure;
+
     [ObservableProperty] private string outputPath = "";
     [ObservableProperty] private string outputDirectory = "";
     [ObservableProperty] private string outputName = "";
@@ -433,6 +447,8 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         AutoChapters = _settings.MergeChapters;
         VerifyOutput = _settings.MergeVerify;
         DeleteSource = _settings.MergeDeleteSource && VerifyOutput;
+        PartialReencode = _settings.MergePartialReencode;
+        AutoFallbackOnFailure = _settings.MergeAutoFallback;
         _loading = false;
         OnPropertyChanged(nameof(ChaptersAvailable));
         OnPropertyChanged(nameof(ChaptersEnabled));
@@ -452,6 +468,8 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         _settings.MergeChapters = AutoChapters;
         _settings.MergeVerify = VerifyOutput;
         _settings.MergeDeleteSource = DeleteSource;
+        _settings.MergePartialReencode = PartialReencode;
+        _settings.MergeAutoFallback = AutoFallbackOnFailure;
         if (OutputDirectory.Length > 0) _settings.MergeOutputDir = OutputDirectory;
     }
 
@@ -897,6 +915,8 @@ public sealed partial class VideoMergeViewModel : ObservableObject
                 : new List<string>(),
             Overwrite = Overwrite,
             VerifyOutput = VerifyOutput,
+            PartialReencode = PartialReencode,
+            AutoFallbackOnFailure = AutoFallbackOnFailure,
             // 删源必须先证明输出完好，因此这里强制与校验联动。
             DeleteSourceAfterVerify = DeleteSource && VerifyOutput,
         };
