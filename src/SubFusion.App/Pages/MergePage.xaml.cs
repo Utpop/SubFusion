@@ -51,7 +51,14 @@ public sealed partial class MergePage : Page
     {
         if (_dragOriginIndex < 0) return;
         _dragOriginIndex = -1;
-        ViewModel.OnInputOrderChanged();
+
+        // 关键：ListView 的内部重排只动了容器，不一定回写到绑定的 ObservableCollection。
+        // 若不同步，视觉顺序变了但 ViewModel.Inputs 还是旧的——下一次布局就会把行弹回原位，
+        // 表现出来正是「拖拽调整顺序无效」。这里按列表实际顺序重建一次。
+        List<MergeInputViewModel> visualOrder = InputsList.Items
+            .OfType<MergeInputViewModel>()
+            .ToList();
+        ViewModel.SyncOrderFrom(visualOrder);
     }
 
     /// <summary>「用这组」按钮：把该组合设为当前合并内容。</summary>
@@ -59,6 +66,19 @@ public sealed partial class MergePage : Page
     {
         if (sender is FrameworkElement { Tag: MergeGroupViewModel group })
             ViewModel.UseGroupCommand.Execute(group);
+    }
+
+    /// <summary>
+    /// 列表自身的 drag-over：明确声明接受的操作类型。
+    /// 内部拖拽是 Move（重排），外部文件是 Copy（追加）——两者必须分开，
+    /// 否则 ListView 不知道该不该接受，内部重排会无声地不生效。
+    /// </summary>
+    private void InputsList_DragOver(object sender, DragEventArgs e)
+    {
+        e.AcceptedOperation = e.DataView.Contains(StandardDataFormats.StorageItems)
+            ? DataPackageOperation.Copy
+            : DataPackageOperation.Move;
+        e.Handled = true;
     }
 
     /// <summary>从资源管理器拖文件到列表：交给 ViewModel 追加，而不是被内部重排吞掉。</summary>

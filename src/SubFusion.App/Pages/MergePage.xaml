@@ -52,10 +52,18 @@
                     <AppBarButton.Icon><FontIcon Glyph="&#xE8E5;"/></AppBarButton.Icon>
                 </AppBarButton>
                 <AppBarSeparator />
-                <AppBarButton Label="上移" Command="{x:Bind ViewModel.MoveUpCommand}">
+                <AppBarButton Label="置顶" Command="{x:Bind ViewModel.MoveToTopCommand}"
+                              ToolTipService.ToolTip="把选中的视频移到最前（可多选，保持选中项之间的顺序）">
                     <AppBarButton.Icon><FontIcon Glyph="&#xE74A;"/></AppBarButton.Icon>
                 </AppBarButton>
+                <AppBarButton Label="上移" Command="{x:Bind ViewModel.MoveUpCommand}">
+                    <AppBarButton.Icon><FontIcon Glyph="&#xE70E;"/></AppBarButton.Icon>
+                </AppBarButton>
                 <AppBarButton Label="下移" Command="{x:Bind ViewModel.MoveDownCommand}">
+                    <AppBarButton.Icon><FontIcon Glyph="&#xE70D;"/></AppBarButton.Icon>
+                </AppBarButton>
+                <AppBarButton Label="置底" Command="{x:Bind ViewModel.MoveToBottomCommand}"
+                              ToolTipService.ToolTip="把选中的视频移到最后（可多选，保持选中项之间的顺序）">
                     <AppBarButton.Icon><FontIcon Glyph="&#xE74B;"/></AppBarButton.Icon>
                 </AppBarButton>
                 <AppBarButton Label="按名称排序" Command="{x:Bind ViewModel.SortByNameCommand}"
@@ -118,6 +126,7 @@
                           DragItemsStarting="InputsList_DragItemsStarting"
                           DragItemsCompleted="InputsList_DragItemsCompleted"
                           Drop="InputsList_Drop"
+                          DragOver="InputsList_DragOver"
                           ItemContainerStyle="{StaticResource TaskListItemStyle}"
                           SelectionChanged="InputsList_SelectionChanged">
                     <ListView.ItemTemplate>
@@ -430,7 +439,23 @@
                         <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.ProgressDetail, Mode=OneWay}"
                                    Style="{StaticResource CaptionStyle}" TextTrimming="CharacterEllipsis" />
                     </Grid>
-                    <ProgressBar Value="{x:Bind ViewModel.Progress, Mode=OneWay}" Maximum="100" Height="4" />
+                    <ProgressBar Value="{x:Bind ViewModel.Progress, Mode=OneWay}" Maximum="100" Height="4"
+                                 IsIndeterminate="{x:Bind ViewModel.IsIndeterminate, Mode=OneWay}" />
+                    <!-- 速度与预计时间：重编码动辄几十分钟，不显示"还要多久"用户无法判断是否卡住 -->
+                    <Grid ColumnSpacing="12"
+                          Visibility="{x:Bind ViewModel.HasProgressInfo, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="{x:Bind ViewModel.ProgressText, Mode=OneWay}"
+                                   Style="{StaticResource CaptionStyle}" />
+                        <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.SpeedText, Mode=OneWay}"
+                                   Style="{StaticResource CaptionStyle}" />
+                        <TextBlock Grid.Column="2" Text="{x:Bind ViewModel.EtaText, Mode=OneWay}"
+                                   Style="{StaticResource CaptionStyle}" HorizontalAlignment="Right" />
+                    </Grid>
                     <InfoBar Severity="Success" IsClosable="False"
                              IsOpen="{x:Bind ViewModel.HasResult, Mode=OneWay}"
                              Message="{x:Bind ViewModel.ResultText, Mode=OneWay}" />

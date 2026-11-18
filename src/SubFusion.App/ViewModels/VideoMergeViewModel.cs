@@ -725,6 +725,31 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     /// 列表顺序被拖拽改变后调用。合并顺序即 Core 的输入顺序，
     /// 会直接影响兼容性判定与章节时间轴，必须重新分析。
     /// </summary>
+    /// <summary>
+    /// 按界面实际顺序重排 <see cref="Inputs"/>。
+    ///
+    /// 拖拽排序后必须调用：ListView 的内部重排只改容器，不会保证回写到绑定的集合；
+    /// 而 <see cref="Inputs"/> 才是合并顺序的唯一来源。不同步的话，
+    /// 视觉上新顺序会维持到下一次布局，然后被集合的真实顺序弹回去——用户看到的就是「拖了没反应」。
+    ///
+    /// 只接受「与当前集合元素完全相同、但顺序不同」的排列；
+    /// 长度或成员不一致说明调用方传错了数据，直接忽略而不是冒险打乱列表。
+    /// </summary>
+    public void SyncOrderFrom(IReadOnlyList<MergeInputViewModel> order)
+    {
+        if (IsRunning || order.Count != Inputs.Count) return;
+        if (order.Distinct().Count() != order.Count) return;   // 有重复项，来源不可信
+
+        List<MergeInputViewModel> current = Inputs.ToList();
+        if (SubFusion.Core.Services.ListReorder.IsSameOrder(current, order)) return;
+
+        // 搬移序列由 Core 计算：这段逻辑有自检覆盖，排序是合并顺序的唯一来源，不能靠肉眼核对。
+        foreach (SubFusion.Core.Services.MoveStep step in
+                 SubFusion.Core.Services.ListReorder.ComputeMoves(current, order))
+            Inputs.Move(step.From, step.To);
+        OnInputOrderChanged();
+    }
+
     public void OnInputOrderChanged()
     {
         if (IsRunning) return;
@@ -740,6 +765,8 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         RemoveSelectedCommand.NotifyCanExecuteChanged();
         MoveUpCommand.NotifyCanExecuteChanged();
         MoveDownCommand.NotifyCanExecuteChanged();
+        MoveToTopCommand.NotifyCanExecuteChanged();
+        MoveToBottomCommand.NotifyCanExecuteChanged();
     }
 
     private bool HasSelection() => _selected.Count > 0 && !IsRunning;
@@ -770,6 +797,49 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         OutputPath = "";
         _outputNameUserEdited = false;
     }
+
+    /// <summary>
+    /// 置顶：把选中项整体移到最前，保持它们之间的相对顺序。
+    /// 多选时必须整体搬运而不是逐个上移——逐个上移会把选中项的顺序反过来，
+    /// 而列表顺序就是合并顺序，反过来等于改掉了用户看到的结果。
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanMoveToTop))]
+    private void MoveToTop()
+    {
+        if (IsRunning || _selected.Count == 0) return;
+        List<MergeInputViewModel> moving = Inputs.Where(_selected.Contains).ToList();
+        if (moving.Count == 0) return;
+        // 已经在最前面时不做任何改动，避免触发无意义的重分析。
+        if (Inputs.Take(moving.Count).SequenceEqual(moving)) return;
+        MoveSelectedTo(moving, 0);
+    }
+
+    /// <summary>置底：把选中项整体移到最后，保持相对顺序。</summary>
+    [RelayCommand(CanExecute = nameof(CanMoveToBottom))]
+    private void MoveToBottom()
+    {
+        if (IsRunning || _selected.Count == 0) return;
+        List<MergeInputViewModel> moving = Inputs.Where(_selected.Contains).ToList();
+        if (moving.Count == 0) return;
+        if (Inputs.Skip(Inputs.Count - moving.Count).SequenceEqual(moving)) return;
+        MoveSelectedTo(moving, Inputs.Count - moving.Count);
+    }
+
+    /// <summary>把一组条目依次搬到 <paramref name="startIndex"/> 起的位置，保持组内顺序。</summary>
+    private void MoveSelectedTo(List<MergeInputViewModel> moving, int startIndex)
+    {
+        // 先算出目标顺序，再交给 Core 求搬移序列：与拖拽排序走同一条逻辑，
+        // 两处若各写一套，迟早会出现「拖拽结果」和「按钮结果」不一致。
+        var target = Inputs.ToList();
+        target.RemoveAll(moving.Contains);
+        target.InsertRange(Math.Clamp(startIndex, 0, target.Count), moving);
+        SyncOrderFrom(target);
+    }
+
+    private bool CanMoveToTop() => HasSelection() && Inputs.IndexOf(_selected[0]) > 0;
+
+    private bool CanMoveToBottom() => HasSelection() && _selected.Count > 0 &&
+                                      Inputs.IndexOf(_selected[^1]) < Inputs.Count - 1;
 
     [RelayCommand(CanExecute = nameof(CanMoveUp))]
     private void MoveUp()
@@ -873,6 +943,17 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     [ObservableProperty] private double progress;
     [ObservableProperty] private string stageText = "空闲";
     [ObservableProperty] private string progressDetail = "";
+
+    /// <summary>当前处理速度（如 "2.4x"）；未知时为空串。</summary>
+    [ObservableProperty] private string speedText = "";
+    /// <summary>预计剩余时间（如 "约 3 分 20 秒"）；无法估算时说明原因。</summary>
+    [ObservableProperty] private string etaText = "";
+    /// <summary>是否已经有可显示的进度信息（决定进度区是否出现在界面）。</summary>
+    [ObservableProperty] private bool hasProgressInfo;
+    /// <summary>进度条是否处于"不确定"状态（刚开始、还没有可信百分比时）。</summary>
+    [ObservableProperty] private bool isIndeterminate;
+    /// <summary>形如 "42% · 第 12 秒 / 共 6 分 10 秒" 的位置说明。</summary>
+    [ObservableProperty] private string progressText = "";
     [ObservableProperty] private string resultText = "";
     [ObservableProperty] private bool hasResult;
     [ObservableProperty] private bool resultOk;
@@ -883,6 +964,8 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         RemoveSelectedCommand.NotifyCanExecuteChanged();
         MoveUpCommand.NotifyCanExecuteChanged();
         MoveDownCommand.NotifyCanExecuteChanged();
+        MoveToTopCommand.NotifyCanExecuteChanged();
+        MoveToBottomCommand.NotifyCanExecuteChanged();
     }
 
     private bool CanStart() => !IsRunning && Inputs.Count > 0 && OutputPath.Length > 0;
@@ -954,6 +1037,11 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         Progress = 0;
         StageText = "准备中…";
         ProgressDetail = "";
+        HasProgressInfo = false;
+        SpeedText = "";
+        EtaText = "";
+        ProgressText = "";
+        IsIndeterminate = true;
 
         _record = _tasks.Add(TaskKind.VideoMerge,
             $"视频合并 · {options.Inputs.Count} 段",
@@ -1048,6 +1136,27 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         StageText = DescribeStage(snapshot);
         ProgressDetail = snapshot.Message;
 
+        // 速度与预计时间：Core 已经把这些数据传上来，之前只是没显示。
+        // 重编码动辄几十分钟，没有「还要多久」会让人不知道程序是不是卡住了。
+        SpeedText = snapshot.Speed > 0
+            ? string.Format(CultureInfo.InvariantCulture, "{0:0.##}x", snapshot.Speed)
+            : "";
+        EtaText = FormatEta(snapshot);
+        HasProgressInfo = true;
+        // 只有在「进度确实为 0、且当前这一步没有速度数据」时才用不确定态。
+        // 重编码进行中速度为 0 说明 ffmpeg 还没吐第一批 progress 行，
+        // 此时显示确定态会让人盯着一个不动的百分比，和卡死没有区别。
+        IsIndeterminate = snapshot.Percent <= 0.01 && snapshot.Speed <= 0;
+        ProgressText = string.Format(CultureInfo.InvariantCulture, "{0:0.#}%", snapshot.Percent);
+
+        // 阶段之间（探测 / 核实 / 待命）本来就没有百分比，
+        // 这里明说"正在准备"而不是让数字停在原处冒充进度。
+        if (snapshot.Speed <= 0 && snapshot.Percent < 99 &&
+            snapshot.Stage is MergeStage.Merging or MergeStage.Verifying or MergeStage.Probing)
+            ProgressDetail = string.IsNullOrEmpty(snapshot.Message)
+                ? "正在处理（此阶段无进度百分比）…"
+                : snapshot.Message + "（此阶段无进度百分比）";
+
         if (_record is not null)
         {
             TaskRecord record = _record;
@@ -1058,6 +1167,34 @@ public sealed partial class VideoMergeViewModel : ObservableObject
                 r.Message = snapshot.Message;
             });
         }
+    }
+
+    /// <summary>
+    /// 把剩余秒数整理成人话。
+    /// 优先用 Core 算出的 ETA（它知道当前这一段还剩多少）；拿不到时按整体百分比线性推算，
+    /// 两者都没有就明说"无法估算"，而不是显示一个假装精确的数字。
+    /// </summary>
+    private static string FormatEta(MergeProgress progress)
+    {
+        if (progress.Eta is > 0 and < 86400)
+            return "预计剩余 " + FormatDuration(progress.Eta.Value);
+        if (progress.Percent >= 100) return "";
+        return progress.Percent > 2 ? "预计剩余 计算中…" : "";
+    }
+
+    private static string FormatDuration(double seconds)
+    {
+        if (seconds < 60) return Math.Max(1, (int)Math.Round(seconds)) + " 秒";
+        if (seconds < 3600)
+        {
+            int m = (int)(seconds / 60);
+            int s = (int)Math.Round(seconds - m * 60);
+            if (s == 60) { m++; s = 0; }
+            return s == 0 ? m + " 分钟" : $"{m} 分 {s} 秒";
+        }
+        int h = (int)(seconds / 3600);
+        int rm = (int)Math.Round((seconds - h * 3600) / 60);
+        return rm == 0 ? h + " 小时" : $"{h} 小时 {rm} 分";
     }
 
     private static string DescribeStage(MergeProgress progress)

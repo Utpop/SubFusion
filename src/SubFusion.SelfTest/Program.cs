@@ -87,6 +87,12 @@ internal static class Program
         await CheckVerificationLadderAsync();
         Console.WriteLine("=== J. 只重编码少数派");
         await CheckPartialReencodeAsync();
+        Console.WriteLine("=== K. 列表排序与进度可见性");
+        CheckOrderingAndProgressUi();
+        Console.WriteLine("=== L. 顺序搬移");
+        CheckListReorder();
+        Console.WriteLine("=== M. 重编码进度可见性");
+        await CheckProgressVisibilityAsync();
 
         Console.WriteLine();
         Console.WriteLine($"通过：{_passed} 项，失败：{Failures.Count} 项");
@@ -560,6 +566,23 @@ internal static class Program
         if (root is null) return null;
         string path = Path.Combine(root, relativePath);
         return File.Exists(path) ? File.ReadAllText(path) : null;
+    }
+
+    /// <summary>读取 Core 工程内的某个文件（相对 src/SubFusion.Core 的路径）。</summary>
+    private static string? FindCoreFile(string relativePath)
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            string candidate = Path.Combine(dir.FullName, "src", "SubFusion.Core");
+            if (Directory.Exists(candidate))
+            {
+                string path = Path.Combine(candidate, relativePath);
+                return File.Exists(path) ? File.ReadAllText(path) : null;
+            }
+            dir = dir.Parent;
+        }
+        return null;
     }
 
     #endregion
@@ -1364,6 +1387,219 @@ internal static class Program
 
     #endregion
 
+    #region L. 顺序搬移（纯逻辑）
+
+    /// <summary>
+    /// 拖拽排序与置顶/置底共用 <see cref="ListReorder"/>。
+    /// 这里验证的是「按算出的序列搬完后，顺序真的等于目标」——
+    /// 计算下标容易差一，而顺序错了会直接改掉合并结果。
+    /// </summary>
+    private static void CheckListReorder()
+    {
+        static List<string> Apply(List<string> current, List<MoveStep> steps)
+        {
+            var list = new List<string>(current);
+            foreach (MoveStep s in steps)
+            {
+                string item = list[s.From];
+                list.RemoveAt(s.From);
+                list.Insert(s.To, item);
+            }
+            return list;
+        }
+
+        var abc = new List<string> { "a", "b", "c", "d" };
+
+        // 拖拽：把 d 拖到最前。
+        List<MoveStep> toFront = ListReorder.ComputeMoves(abc, new List<string> { "d", "a", "b", "c" });
+        Check("L1 拖到最前的搬移序列正确",
+              Apply(abc, toFront).SequenceEqual(new[] { "d", "a", "b", "c" }),
+              string.Join(",", Apply(abc, toFront)));
+
+        // 拖拽：把 a 拖到最后。
+        List<MoveStep> toEnd = ListReorder.ComputeMoves(abc, new List<string> { "b", "c", "d", "a" });
+        Check("L2 拖到最后的搬移序列正确",
+              Apply(abc, toEnd).SequenceEqual(new[] { "b", "c", "d", "a" }),
+              string.Join(",", Apply(abc, toEnd)));
+
+        // 置底（多选）：把 a、c 整体移到最后，且两者相对顺序不变。
+        List<MoveStep> tail = ListReorder.ComputeMoves(abc, new List<string> { "b", "d", "a", "c" });
+        Check("L3 多选置底保持选中项相对顺序",
+              Apply(abc, tail).SequenceEqual(new[] { "b", "d", "a", "c" }),
+              string.Join(",", Apply(abc, tail)));
+
+        // 顺序未变时不应产生任何搬移（否则会触发无意义的重分析）。
+        Check("L4 顺序相同时不产生搬移",
+              ListReorder.ComputeMoves(abc, new List<string> { "a", "b", "c", "d" }).Count == 0);
+        Check("L5 IsSameOrder 判定一致",
+              ListReorder.IsSameOrder(abc, new List<string> { "a", "b", "c", "d" }) &&
+              !ListReorder.IsSameOrder(abc, new List<string> { "b", "a", "c", "d" }));
+
+        // 元素集合不一致时必须拒绝，而不是把列表改坏。
+        Check("L6 目标不是同一批元素时拒绝搬移",
+              ListReorder.ComputeMoves(abc, new List<string> { "a", "b", "c" }).Count == 0 &&
+              ListReorder.ComputeMoves(abc, new List<string> { "a", "b", "c", "x" }).Count == 0);
+        Check("L7 元素重复的目标被拒绝",
+              ListReorder.ComputeMoves(abc, new List<string> { "a", "a", "b", "c" }).Count == 0);
+
+        // 随机排列来回验证：任意目标顺序都能一次搬到位（防止只覆盖少数几种情况）。
+        var rng = new Random(20261118);
+        bool allOk = true;
+        for (int trial = 0; trial < 200 && allOk; trial++)
+        {
+            var perm = Enumerable.Range(0, 8).Select(i => "i" + i).ToList();
+            var shuffled = perm.OrderBy(_ => rng.Next()).ToList();
+            allOk = Apply(perm, ListReorder.ComputeMoves(perm, shuffled)).SequenceEqual(shuffled);
+        }
+        Check("L8 任意目标顺序都能正确搬到位（200 次随机）", allOk);
+    }
+
+    #endregion
+
+    #region M. 重编码进度可见性（实机）
+
+    /// <summary>
+    /// 「重编码时看不出来在不在动」是用户可感知的问题，只能靠真实跑一次来守：
+    /// 断言进度确实推进、且带上了速度与 ETA。
+    /// 静态检查（K8）只能证明界面绑定写了，证明不了 Core 真的在上报。
+    /// </summary>
+    private static async Task CheckProgressVisibilityAsync()
+    {
+        string? ffmpeg = ToolLocator.FindFfmpeg();
+        string? ffprobe = ToolLocator.FindFfprobe();
+        if (string.IsNullOrEmpty(ffmpeg) || string.IsNullOrEmpty(ffprobe))
+        {
+            Console.WriteLine("(未找到 ffmpeg/ffprobe，跳过进度可见性验证)");
+            return;
+        }
+
+        string work = Path.Combine(Path.GetTempPath(), "subfusion_prog_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(work);
+        try
+        {
+            // 两段不同分辨率 → 必然走全量重编码，正好覆盖"编码阶段"。
+            string v1 = await MakeClipAsync(ffmpeg, work, "pv1", 640, 360, "30", "aac", 48000, 2, 8.0, "testsrc");
+            string v2 = await MakeClipAsync(ffmpeg, work, "pv2", 1280, 720, "30", "aac", 48000, 2, 8.0, "smptebars");
+
+            var samples = new List<MergeProgress>();
+            var task = new VideoMergeTask(await FfmpegTools.ResolveAsync(ffmpeg, ffprobe));
+            MergeResult result = await task.RunAsync(new VideoMergeOptions
+            {
+                Inputs = new List<string> { v1, v2 },
+                OutputPath = Path.Combine(work, "out.mkv"),
+                Container = "mkv",
+                AllowReencode = true,
+                VerifyOutput = false,
+                PartialReencode = false,
+                Preset = "slow",
+                Crf = 18,
+                Overwrite = true,
+            }, new Progress<MergeProgress>(p => { lock (samples) samples.Add(p); }));
+
+            Check("M1 重编码合并成功", result.Ok, result.Error);
+
+            List<MergeProgress> all;
+            lock (samples) all = samples.ToList();
+            List<MergeProgress> during = all.Where(p => p.Stage == MergeStage.Merging).ToList();
+
+            Check("M2 合并阶段有多次进度回调（不是一次到位）", during.Count >= 3,
+                  "回调 " + during.Count + " 次");
+            Check("M3 进度确实在推进（百分比有变化）",
+                  during.Count >= 2 && during.Max(p => p.Percent) > during.Min(p => p.Percent),
+                  during.Count >= 2
+                      ? string.Format(CultureInfo.InvariantCulture, "{0:0.#}% → {1:0.#}%",
+                          during.Min(p => p.Percent), during.Max(p => p.Percent))
+                      : "");
+            // 速度与 ETA 是"还要多久"的信息来源；没有它们，界面只能显示一个百分比。
+            Check("M4 进度回调带上了速度", during.Any(p => p.Speed > 0),
+                  "带速度的回调 " + during.Count(p => p.Speed > 0));
+            Check("M5 进度回调带上了预计剩余时间", during.Any(p => p.Eta is > 0),
+                  "带 ETA 的回调 " + during.Count(p => p.Eta is > 0));
+            Check("M6 重编码阶段有可读的过程说明",
+                  during.Any(p => p.Message.Contains("重新编码", StringComparison.Ordinal)),
+                  during.Select(p => p.Message).FirstOrDefault() ?? "");
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    #endregion
+
+    #region K. 列表排序与进度可见性（静态约束）
+
+    /// <summary>
+    /// 这三条都是「用户看得见但不生效」的回归点，只能在源码层面守住：
+    /// 拖拽需要 drag-over 明确声明 Move，置顶/置底需要按钮可达，
+    /// 进度需要把 Core 已经提供的时间信息真的显示出来。
+    /// </summary>
+    private static void CheckOrderingAndProgressUi()
+    {
+        string? mergePage = FindAppFile(Path.Combine("Pages", "MergePage.xaml"));
+        string? mergeCode = FindAppFile(Path.Combine("Pages", "MergePage.xaml.cs"));
+        string? shellCode = FindAppFile(Path.Combine("Views", "MainWindow.xaml.cs"));
+        string? mergeVm = FindAppFile(Path.Combine("ViewModels", "VideoMergeViewModel.cs"));
+
+        Check("K1 合并页存在", mergePage is not null && mergeCode is not null && mergeVm is not null);
+        if (mergePage is null || mergeCode is null || mergeVm is null) return;
+
+        // 拖拽排序：ListView 必须同时开启 CanDragItems / CanReorderItems，
+        // 并且自己挂 DragOver —— 根元素 DragOver 返回 None 时内部重排会被拒绝，
+        // 表现就是「鼠标拖动完全没反应」。
+        Check("K2 列表开启行内拖拽重排",
+              mergePage.Contains(@"CanDragItems=""True""", StringComparison.Ordinal) &&
+              mergePage.Contains(@"CanReorderItems=""True""", StringComparison.Ordinal));
+        Check("K3 列表自身处理 DragOver（否则内部重排被上级拒绝）",
+              mergePage.Contains(@"DragOver=""InputsList_DragOver""", StringComparison.Ordinal) &&
+              mergeCode.Contains("InputsList_DragOver", StringComparison.Ordinal) &&
+              mergeCode.Contains("DataPackageOperation.Move", StringComparison.Ordinal));
+        Check("K4 根元素对内部拖拽声明 Move（而不是直接 return）",
+              shellCode is not null &&
+              shellCode.Contains("DataPackageOperation.Move", StringComparison.Ordinal));
+        // 拖拽结束后必须把列表的实际顺序回写到 ViewModel，并在那里触发重分析。
+        // 只调 OnInputOrderChanged 是不够的：它不改变集合顺序，
+        // 视觉上的新顺序会在下一次布局时被集合的真实顺序弹回去（表现为「拖了没反应」）。
+        Check("K5 拖拽结束后回写集合顺序并重新分析",
+              mergeCode.Contains("DragItemsCompleted", StringComparison.Ordinal) &&
+              mergeCode.Contains("SyncOrderFrom", StringComparison.Ordinal) &&
+              mergeVm.Contains("public void SyncOrderFrom", StringComparison.Ordinal) &&
+              mergeVm.Contains("OnInputOrderChanged();", StringComparison.Ordinal));
+        // 置顶/置底也得走同一条搬移逻辑，否则「按钮顺序」与「拖拽顺序」会不一致。
+        Check("K5b 置顶/置底复用同一套搬移逻辑",
+              mergeVm.Contains("ListReorder.ComputeMoves", StringComparison.Ordinal));
+
+        // 置顶 / 置底：按钮必须在工具栏可达，且命令真的存在。
+        Check("K6 工具栏提供「置顶」「置底」按钮",
+              mergePage.Contains(@"Label=""置顶""", StringComparison.Ordinal) &&
+              mergePage.Contains(@"Label=""置底""", StringComparison.Ordinal) &&
+              mergePage.Contains("MoveToTopCommand", StringComparison.Ordinal) &&
+              mergePage.Contains("MoveToBottomCommand", StringComparison.Ordinal));
+        Check("K7 置顶/置底命令成对实现且保持相对顺序",
+              mergeVm.Contains("private void MoveToTop()", StringComparison.Ordinal) &&
+              mergeVm.Contains("private void MoveToBottom()", StringComparison.Ordinal) &&
+              mergeVm.Contains("MoveSelectedTo(", StringComparison.Ordinal));
+
+        // 进度可见性：Core 已经提供了 speed/eta，界面必须真的显示。
+        Check("K8 进度区显示速度与预计剩余时间",
+              mergePage.Contains("SpeedText", StringComparison.Ordinal) &&
+              mergePage.Contains("EtaText", StringComparison.Ordinal) &&
+              mergePage.Contains("HasProgressInfo", StringComparison.Ordinal));
+        Check("K9 进度条支持不确定态（起步阶段不再趴在 0%）",
+              mergePage.Contains("IsIndeterminate", StringComparison.Ordinal) &&
+              mergeVm.Contains("IsIndeterminate", StringComparison.Ordinal));
+        Check("K10 ETA 在无法估算时明说，不显示假的精确值",
+              mergeVm.Contains("FormatEta", StringComparison.Ordinal) &&
+              mergeVm.Contains("计算中", StringComparison.Ordinal));
+        // 每一段重编码都必须把 speed/eta 一路带到回调，否则 ETA 无从计算。
+        string? engine = FindCoreFile(Path.Combine("Merge", "VideoMergeEngine.cs"));
+        Check("K11 重编码逐段上报 speed/eta",
+              engine is not null &&
+              System.Text.RegularExpressions.Regex.Matches(engine, @"\(percent, speed, eta\) =>").Count >= 2);
+    }
+
+    #endregion
+
     #region J. 只重编码少数派
 
     /// <summary>
@@ -1439,6 +1675,10 @@ internal static class Program
             Check("J9 保留段未被重新编码", keptIntact,
                   string.Join(" | ", result.Diagnostics.Where(l => l.StartsWith("[部分重编码]", StringComparison.Ordinal))));
 
+            // 合并失败时，下面这几条不是"跳过"，而是"没验证到"——必须显式记失败，
+            // 否则项数会随运行结果浮动，全绿也说明不了问题。
+            if (!result.Ok)
+                Check("J10-J12 合并失败导致输出断言无法执行", false, result.Error);
             if (result.Ok)
             {
                 MediaBundle outInfo = await MediaInspector.InspectAsync(ffprobe, output);

@@ -479,6 +479,18 @@ G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine）�
   ③ 核实必须探测**即将拼接的那些文件本身**，不是原始输入——拿原始 mp4 与重封装后的 mkv 比，
      必然误判为不一致并白白退回全量。核实不过自动退回全量重编码，不做任何宽容。
   J 组用例守住这三条，其中 J8 专门检查「没有退回全量」。
+- **拖拽排序**：`CanDragItems` + `CanReorderItems` 只是前提，还有两个必踩的坑：
+  ① `DragOver` 必须显式声明 `DataPackageOperation.Move`。`AcceptedOperation` 默认是 None，
+     根元素在内部拖拽时直接 `return` 会让 ListView 的重排在 drag-over 阶段就被拒绝，
+     表现是「鼠标拖动毫无反应」，且没有任何报错；
+  ② 拖拽结束后必须把列表实际顺序**回写**到 `Inputs`。ListView 内部重排只动容器，
+     不回写的话视觉顺序会在下次布局时被集合的真实顺序弹回原位，同样表现为「拖了没反应」。
+  回写与置顶/置底共用 `ListReorder.ComputeMoves`（在 Core，可被自检覆盖）；
+  两处各写一套排序逻辑迟早会不一致。L 组用例守着下标计算。
+- **进度显示**：Core 的 `MergeProgress` 一直带 `Speed` 与 `Eta`，
+  但 `FlushProgress` 若不往外传，界面就只能显示一个百分比。
+  「看不出在不在动」多半是 UI 层丢字段，不是 Core 没上报——先查 `FlushProgress`。
+  M 组用真实重编码断言进度确实推进且带 speed/eta，静态断言（K8）证明不了这一点。
 - **加测试时警惕"静默跳过"**：自检里的条件分支（如 `if (bytes.Length > N)`）若不满足，
   用例会静默不执行——**总数不变且全绿**，看起来完全正常。改完自检必须确认项数真的增加了；
   门槛值要按实际产物尺寸设定（3 段 2 秒 320x240 的 mkv 只有约 80KB，别写 200_000）。

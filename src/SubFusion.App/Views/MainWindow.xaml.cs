@@ -785,7 +785,15 @@ public sealed partial class MainWindow : Window, IUiServices
 
     private void Root_DragOver(object sender, DragEventArgs e)
     {
-        if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
+        if (!e.DataView.Contains(StandardDataFormats.StorageItems))
+        {
+            // 不含文件 = 列表内部的拖拽排序。这里必须显式给出 Move：
+            // AcceptedOperation 默认是 None，根元素返回 None 会让 ListView 的内部重排
+            // 在 drag-over 阶段就被拒绝，表现就是「鼠标拖动没有任何反应」。
+            // 之前这里直接 return，正是拖拽排序失效的原因。
+            e.AcceptedOperation = DataPackageOperation.Move;
+            return;
+        }
         e.AcceptedOperation = DataPackageOperation.Copy;
         e.DragUIOverride.Caption = "添加视频 / 字幕 / 文件夹";
         e.DragUIOverride.IsCaptionVisible = true;
