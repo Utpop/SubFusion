@@ -41,11 +41,24 @@ public sealed record InputHealth(string Path, double DeclaredSeconds, double Rea
     private const double MaxProportional = 2.0;
 
     /// <summary>声明时长与可读终点之差（秒）；可读终点未知时为 0。</summary>
-    public double MissingSeconds => Math.Max(0, DeclaredSeconds - ReadableSeconds);
+    public double MissingSeconds => ReadableSeconds > 0 ? Math.Max(0, DeclaredSeconds - ReadableSeconds) : 0;
 
-    /// <summary>true 表示文件声明有的数据实际读不到——尾部被截断。</summary>
-    // 全包扫描找不到任何可读包时 ReadableSeconds=0，这是最严重的截断，绝不能放行。
-    public bool Truncated => DeclaredSeconds > 0 && (ReadableSeconds <= 0 || MissingSeconds > Tolerance);
+    /// <summary>
+    /// 可读终点是否拿到了确定结论。false 表示扫包本身没给出答案（超时/被杀/ffprobe 出错），
+    /// 此时既不能判「完整」也不能判「截断」。
+    /// </summary>
+    public bool ReadableKnown => ReadableSeconds > 0;
+
+    /// <summary>
+    /// true 表示文件声明有的数据实际读不到——尾部被截断。
+    ///
+    /// ReadableSeconds &lt;= 0 表示**扫包没有给出结论**，不是「一个可读包都没有」。
+    /// 这两件事必须分开：把「探测失败」当成截断，引擎会对完好的大文件执行
+    /// 「按可读部分收尾」，KeepSeconds 归零后产出 0 秒片段，
+    /// 最终报错还指向用户本来完好的素材。所以这里不下判断（宁可漏报）；
+    /// 真正的「收尾后仍然读不出来」由引擎在收尾失败时单独上报。
+    /// </summary>
+    public bool Truncated => DeclaredSeconds > 0 && ReadableKnown && MissingSeconds > Tolerance;
 
     /// <summary>可读数据里真正能安全保留的长度（留出余量，避开残缺的尾包）。</summary>
     public double KeepSeconds
@@ -62,6 +75,10 @@ public sealed record InputHealth(string Path, double DeclaredSeconds, double Rea
 
     public string Describe()
     {
+        if (!ReadableKnown)
+            return string.Format(CultureInfo.InvariantCulture,
+                "{0}：无法确定可读终点（声明 {1:F2}s，扫包未给出结论）",
+                System.IO.Path.GetFileName(Path), DeclaredSeconds);
         if (!Truncated)
             return string.Format(CultureInfo.InvariantCulture, "{0}：完整（{1:F2}s）",
                 System.IO.Path.GetFileName(Path), DeclaredSeconds);

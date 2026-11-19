@@ -43,7 +43,7 @@ public sealed partial class VideoTrimViewModel : ObservableObject
 
     private MediaBundle? _bundle;
     private KeyframeIndex _keyframes = new();
-    private int _sourceRotation;
+    private int? _sourceRotation;
 
     private bool _loading;
     private bool _outputNameUserEdited;
@@ -133,7 +133,7 @@ public sealed partial class VideoTrimViewModel : ObservableObject
                 return;
             }
 
-            (MediaBundle bundle, KeyframeIndex keyframes, int rotation) =
+            (MediaBundle bundle, KeyframeIndex keyframes, int? rotation) =
                 await task.AnalyzeAsync(InputPath, cts.Token);
             if (cts.IsCancellationRequested) return;
 
@@ -156,9 +156,11 @@ public sealed partial class VideoTrimViewModel : ObservableObject
                 OnPropertyChanged(nameof(SnapToKeyframes));
                 MediaInfoText = DescribeMedia(bundle);
                 KeyframeText = keyframes.Describe();
-                RotationText = rotation == 0
-                    ? "无显示方向（正常横屏素材）"
-                    : "源文件自带 " + rotation + "° 显示方向（竖屏素材，裁剪时会原样保留）";
+                RotationText = rotation is null
+                    ? "无法读取显示方向（ffprobe 未给出结果；竖屏素材可能丢失方向）"
+                    : rotation == 0
+                        ? "无显示方向（正常横屏素材）"
+                        : "源文件自带 " + rotation + "° 显示方向（竖屏素材，裁剪时会原样保留）";
 
                 // 输出默认落在源文件旁边：绝大多数场景是「就地截一段」，
                 // 留空会让输出路径为空、开始按钮不可用，用户还得再点一次「浏览」。
@@ -487,7 +489,11 @@ public sealed partial class VideoTrimViewModel : ObservableObject
         }
 
         double sourceDuration = _bundle.Duration;
-        if (start < 0 || end <= start)
+        // 终点收敛走 Core 的统一实现：界面、Validate、命令构造三处必须是同一份结果，
+        // 否则会出现「界面可以点开始、校验却报时长不足」这种自相矛盾。
+        var planned = new VideoTrimOptions { StartSeconds = start, EndSeconds = end };
+        double clampedEnd = planned.NormalizeRange(sourceDuration).End;
+        if (start < 0 || clampedEnd <= start)
         {
             PlanError = "终点必须大于起点";
             PlanText = "";
@@ -502,8 +508,6 @@ public sealed partial class VideoTrimViewModel : ObservableObject
             StartCommand.NotifyCanExecuteChanged();
             return;
         }
-
-        double clampedEnd = Math.Min(end, sourceDuration);
 
         // 无损模式下真实切点 = 关键帧吸附结果；精确模式就是请求值。
         // 这个数字必须来自 Core 的关键帧索引，界面不能自己猜。
@@ -528,7 +532,9 @@ public sealed partial class VideoTrimViewModel : ObservableObject
             return;
         }
 
-        RotationPlan rotationPlan = RotationPlan.Create(_sourceRotation, Rotation, Mode == TrimMode.Copy);
+        // 未能读取方向时按 0° 参与预览计划（与引擎执行口径一致），
+        // 真实执行会在 notices 里说明「未能读取源显示方向」。
+        RotationPlan rotationPlan = RotationPlan.Create(_sourceRotation ?? 0, Rotation, Mode == TrimMode.Copy);
 
         HasPlan = true;
         PlanSnaps = snaps;
@@ -612,8 +618,18 @@ public sealed partial class VideoTrimViewModel : ObservableObject
             string withoutExt = Path.HasExtension(name) ? name[..^Path.GetExtension(name).Length] : name;
             name = withoutExt + extension;
         }
-        try { OutputPath = Path.Combine(dir, name); }
-        catch { OutputPath = ""; }
+        try
+        {
+            OutputPath = Path.Combine(dir, name);
+            PlanError = "";
+        }
+        catch (Exception ex)
+        {
+            // 路径拼不出来时按钮会直接变灰，界面却一个字都不说，用户只会以为程序坏了。
+            // 把原因留在 PlanError 上，由计划区显示出来。
+            OutputPath = "";
+            PlanError = "无法生成输出路径：" + ex.Message;
+        }
     }
 
     [RelayCommand]
@@ -928,7 +944,14 @@ public sealed partial class VideoTrimViewModel : ObservableObject
             _tasks.Finish(_record, TaskState.Cancelled, "已取消");
         }
         try { _runSource?.Cancel(); } catch (ObjectDisposedException) { /* 刚好收尾 */ }
+        // 取消是协作式的：Core 要等 ffmpeg 进程退出才返回，期间仍会回推进度。
+        // 不关掉进度通道，界面就会继续往前走，看起来像「取消无效」。
+        _progressClosed = true;
+        IsIndeterminate = false;
         StageText = "正在取消…";
+        ProgressDetail = "正在等待当前步骤安全退出…";
+        SpeedText = "";
+        EtaText = "";
         CanCancel = false;
     }
 

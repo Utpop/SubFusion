@@ -164,7 +164,9 @@ public static class AvSyncProbe
     {
         double tolerance = toleranceSeconds > 0 ? toleranceSeconds : DefaultToleranceSeconds;
 
-        if (!source.Ok) return (true, 0, "源文件音画起点无法探测，跳过同步校验");
+        // 源侧探测失败时不能报「通过」：那会让界面显示「音画同步：已核实，无错位」，
+        // 而实际上一次比较都没做。这里如实返回「未能核实」，由调用方决定怎么说。
+        if (!source.Ok) return (true, 0, "源文件音画起点无法探测，本次未能核实音画同步");
         if (!output.Ok) return (false, 0, "输出音画起点无法探测：" + output.Error);
 
         if (!source.HasAudio || !output.HasAudio)

@@ -22,8 +22,11 @@ public sealed class VideoTrimTask
 
     public FfmpegTools Tools => _tools;
 
-    /// <summary>只分析不执行：返回媒体信息、关键帧时间轴与源旋转角。</summary>
-    public Task<(MediaBundle Bundle, KeyframeIndex Keyframes, int SourceRotation)> AnalyzeAsync(
+    /// <summary>
+    /// 只分析不执行：返回媒体信息、关键帧时间轴与源旋转角。
+    /// <c>SourceRotation</c> 为 null 表示未能读取（不等于 0°）。
+    /// </summary>
+    public Task<(MediaBundle Bundle, KeyframeIndex Keyframes, int? SourceRotation)> AnalyzeAsync(
         string inputPath, CancellationToken cancellationToken = default)
         => new VideoTrimEngine(_tools).AnalyzeAsync(inputPath, cancellationToken);
 

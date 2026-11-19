@@ -345,7 +345,7 @@ $env:TMP = $tmp; $env:TEMP = $tmp
 
 ## 6. 测试
 
-`SelfTest` 是唯一测试入口，当前 **319 项断言**，全部通过：
+`SelfTest` 是唯一测试入口。完整模式 **589 项断言**、`--skip-e2e` **575 项**（跳过 B 组端到端），两者均全部通过：
 
 | 分组 | 内容 |
 | --- | --- |
@@ -357,6 +357,15 @@ $env:TMP = $tmp; $env:TEMP = $tmp
 | F | 并发硬字幕工作副本隔离 |
 | G | 视频合并引擎（48 项）：探测字段完整性、SAR/DAR、兼容性判定、无损拼接、自动重编码、三种分辨率适配、无音轨、多音轨、HDR/SDR、取消、并发隔离、损坏/缺失输入、拒绝覆盖、分析接口 |
 | H | MKV 自动章节（32 项）：时间轴计算与校正、合法性校验、ffmetadata 转义、默认/自定义/关闭标题、章节不触发重编码、MP4 不写章节、输入自带章节不翻倍 |
+| I | 校验阶梯 / 诊断建议 / concat 清单健壮性 |
+| J | 只重编码少数派：目标参数取自保留段、统一容器与时基、核实不过自动退回全量 |
+| K / M / R | 列表排序、重编码进度可见性、进度终态送达 |
+| L | 顺序搬移（`ListReorder.ComputeMoves` 的下标计算） |
+| N | 视频裁剪：无损 / 精确 / 旋转 / 音画同步 |
+| O | 时间轴拖动选择（吸附规则与引擎一致） |
+| P | 输入截断检测与收尾（含「可读终点未知时不下判断」） |
+| Q | 输出搬运与进度可见性（同卷改名 / 跨卷带进度复制 / 取消清理） |
+| S | 无损组合分配到文件夹 |
 
 G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine），不依赖任何外部视频文件。
 测试素材显式用 `setparams` 写 BT.709 标记，否则同一批素材的色彩字段会是「未知」，兼容性判定无法对齐。
@@ -494,6 +503,38 @@ G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine）�
 - **加测试时警惕"静默跳过"**：自检里的条件分支（如 `if (bytes.Length > N)`）若不满足，
   用例会静默不执行——**总数不变且全绿**，看起来完全正常。改完自检必须确认项数真的增加了；
   门槛值要按实际产物尺寸设定（3 段 2 秒 320x240 的 mkv 只有约 80KB，别写 200_000）。
+- **删源 / 删半成品只能删自己创建的文件**：`VideoTrimEngine` 先渲染到本任务专属临时文件
+  （`TempRenderPath`，受 `VideoTrimOptions.TempDirectory` 控制），校验通过后才 `FileMover.MoveAsync` 落盘；
+  `FileMover.MoveAsync` 在跨卷复制成功后若删源失败会抛异常——源与目标并存必须让调用方知道。
+  `BatchProcessor.TryDeletePartialOutput` 只在「确实失败」时调用，顺序上先判成功再判取消：
+  ffmpeg 写完输出与用户点停止之间有个毫秒级窗口，顺序反了会把完好成品删掉。
+- **「检测失败」不等于「检测到了坏结果」**：`InputHealth.ReadableKnown` 为 false 表示扫包没给出结论，
+  此时 `Truncated` 必须为 false，引擎也必须在 `KeepSeconds <= 0` 时拒绝收尾。
+  把它当成截断，会对完好大文件执行「按可读部分收尾」，产出 0 秒片段并让整次合并失败。
+- **失败态必须与「无需处理」分开返回**：`ConvertResult.Failed` / `Error` 非空表示编码转换失败，
+  调用方要跳过该轨。混同于「已是 UTF-8」会让 GBK 字幕以乱码写进输出、任务却显示成功，
+  且该路径已进 `mergedSources`，替换源文件时会把用户原始字幕删掉（不可逆）。
+- **`OutputPlan.ExpectedSubs` 的取值被冻结基准逐项比对**，不要为了修校验去改它；
+  需要不同口径时加独立标记（如 `SubsFromSource` / `SubsSourceKnown`），由 `OutputVerifier` 分支处理。
+- **媒体信息必须先探测成功再建命令**：`job.Info.Probed` 为 false 时 `SStreams` 是 0 而不是「确实没有」，
+  `-metadata:s:s:N` / `-disposition:s:s:N` 的下标会写到被 `-map 0:s?` 复制的源字幕轨上。
+  `BatchProcessor` 会补探测，仍失败就明确失败退出，不带着错误前提继续跑。
+- **取消要冻结 UI 进度**：取消是协作式的，Core 还要等 ffmpeg 退出才返回；
+  `Cancel()` 里必须置 `_progressClosed`，否则界面继续前进、甚至把阶段文案写回「合并中…」。
+- **进度回调一律包 try/catch**：窗口关闭后 Dispatcher 抛出的异常若落进复制循环的 catch，
+  会把一份已完整复制的输出当成半成品删掉（`FileMover` / `GroupFolderExporter` / `FfmpegRunner` 三处一致）。
+- **关闭流程要防重入**：`MainWindow.ClosingAsync` 用 `_closing` 标志拦住确认框显示期间的第二次关闭请求；
+  确认后置 `_closingWindow`，此后 `RunOnUiThread` 的回调直接丢弃而不是塞进永不排空的队列。
+- **改裁剪（Trim）**：命令唯一出口是 `TrimCommandBuilder.Build`；引擎执行时传入的是本任务渲染的
+  临时文件（`VideoTrimEngine.TempRenderPath`，受 `VideoTrimOptions.TempDirectory` 控制），
+  校验通过后才 `FileMover.MoveAsync` 落到最终路径。**不要改成直接写最终路径**：
+  ffmpeg 的 `-y` 会先截断同名文件，失败或取消后再清理半成品，就会连带删掉用户原本放在那里的文件。
+  区间归一（终点收敛到实际时长、最小时长）只在 `VideoTrimOptions.NormalizeRange` 一处实现，
+  `Validate` / 命令构造 / 引擎 / `VideoTrimViewModel.RefreshPlan` 全部复用它。
+- **时间轴吸附必须与引擎同规则**：引擎 `KeyframeIndex.SnapToKeyframe` 无容差、永远回退到上一个关键帧，
+  界面若在容差外不吸附，就会出现「标尺显示 5.3s、实际从 2.0s 开始」的所见非所得。
+- **裁剪区间归一只有一处**：`VideoTrimOptions.NormalizeRange(duration)` 同时供 Validate、
+  `TrimCommandBuilder`、引擎与 `VideoTrimViewModel.RefreshPlan` 使用，三处各算一遍必然分叉。
 - **提交前必跑**：`dotnet build --no-incremental` + 完整自检 + 单 EXE 发布。
 
 ---

@@ -138,28 +138,51 @@ public sealed partial class ShellViewModel : ObservableObject
 
     private async Task RequestDetectToolsAsync()
     {
-        _detectCancel?.Cancel();
-        _detectCancel?.Dispose();
+        // 这里只取消、不释放上一次的 CTS：旧任务可能正停在 WaitAsync /
+        // ThrowIfCancellationRequested 上握着它的 Token，立刻 Dispose 会让它抛
+        // ObjectDisposedException 并变成 UnobservedTaskException——表现是工具检测静默中止、
+        // 状态栏永远停在「正在检测 ffmpeg…」。释放统一交给持有它的那个任务收尾。
+        CancellationTokenSource? previousSource = _detectCancel;
+        if (previousSource is not null)
+        {
+            try { previousSource.Cancel(); } catch (ObjectDisposedException) { /* 已释放 */ }
+        }
         _detectCancel = new CancellationTokenSource();
         CancellationToken token = _detectCancel.Token;
-        Task previous = _detectTask ?? Task.CompletedTask;
-        _detectTask = RunDetectSerializedAsync(previous, token);
+        Task previousTask = _detectTask ?? Task.CompletedTask;
+        _detectTask = RunDetectSerializedAsync(previousTask, previousSource, token);
         try { await _detectTask; }
         catch (OperationCanceledException) { /* cancelled by newer request */ }
     }
 
-    private async Task RunDetectSerializedAsync(Task previous, CancellationToken token)
+    private async Task RunDetectSerializedAsync(Task previous, CancellationTokenSource? previousSource,
+                                                CancellationToken token)
     {
         // 这里不能 ConfigureAwait(false)：后续 DetectToolsCoreAsync 会写 ToolText / ToolReady /
         // Settings.ToolStatusText 这些可观察属性，它们必须在 UI 线程赋值，否则绑定收不到通知。
         try { await previous; } catch { /* 上一次探测的失败不影响本次 */ }
-        await _detectGate.WaitAsync(token);
+        try
+        {
+            await _detectGate.WaitAsync(token);
+        }
+        catch (OperationCanceledException)
+        {
+            // 等锁期间就被新请求取代：这一代什么也没做，直接收尾。
+            try { previousSource?.Dispose(); } catch { /* 忽略 */ }
+            return;
+        }
+
         try
         {
             token.ThrowIfCancellationRequested();
             await DetectToolsCoreAsync(token);
         }
-        finally { _detectGate.Release(); }
+        finally
+        {
+            _detectGate.Release();
+            // 上一代此刻一定已经离开锁区，可以安全释放。
+            try { previousSource?.Dispose(); } catch { /* 忽略 */ }
+        }
     }
 
     private async Task DetectToolsCoreAsync(CancellationToken token)

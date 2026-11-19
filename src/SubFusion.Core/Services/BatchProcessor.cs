@@ -228,10 +228,23 @@ public sealed class BatchProcessor
                 // 因此这里无条件先修一遍；只有确实需要改动时才使用副本。
                 if (track.Kind == "text")
                 {
-                    bool needsRepair = EncodingService.NeedsScriptInfoRepair(track.Path);
+                    // EnsureUtf8 内部本来就要做「是否缺 [Script Info]」的判断（它需要文本才能判断）。
+                    // 这里不再先无条件探测一次：那要多读一遍整个文件并重新检测编码，
+                    // 大体积特效 ASS × 多任务时 IO 与解码开销直接翻倍。
+                    // 只有「不需要转编码」时才单独探一次，避免漏掉结构修复。
+                    bool needsRepair = !options.ConvertEncoding &&
+                                       EncodingService.NeedsScriptInfoRepair(track.Path);
                     if (needsRepair || options.ConvertEncoding)
                     {
                         ConvertResult converted = EncodingService.EnsureUtf8(track.Path, request.TempDir);
+                        // 转换失败必须当成「这条轨不可用」：继续用原文件会让 ffmpeg 按 UTF-8
+                        // 解出乱码写进输出轨，任务却显示成功；更糟的是它进了 mergedSources，
+                        // 替换源文件时会把用户原始的 GBK 字幕删掉。
+                        if (converted.Failed)
+                        {
+                            _events.Log($"[跳过] {job.Name}：字幕 {track.Name} 编码转换失败（{converted.Error}）");
+                            continue;
+                        }
                         if (!string.IsNullOrEmpty(converted.Encoding))
                             track.Encoding = converted.Encoding;
                         if (converted.Created)
@@ -259,6 +272,29 @@ public sealed class BatchProcessor
             return;
         }
 
+        // 媒体信息没探测成功时（Info 是全 0 的默认值），命令里的 -map 0:s?、
+        // ExpectedAudio 与 -metadata:s:s:N 的下标全部建立在「源有 0 条音轨/字幕」这个
+        // 错误前提上：语言与 disposition 会写到源字幕轨上，新轨反而不带语言标记。
+        // 这里补一次探测；仍然拿不到就明确失败，而不是带着错误前提继续跑。
+        if (!job.Info.Probed && !string.IsNullOrEmpty(request.Ffprobe))
+        {
+            MediaInfo reprobed = await MediaProbe.ProbeStreamsAsync(request.Ffprobe, job.Video, 30,
+                cancellationToken).ConfigureAwait(false);
+            if (reprobed.Probed)
+            {
+                job.Info = reprobed;
+                job.Duration = reprobed.Duration ?? job.Duration;
+                _events.Log($"[探测] {job.Name}：已补做媒体信息探测（音轨 {reprobed.AStreams}，字幕 {reprobed.SStreams}）");
+            }
+        }
+        if (!job.Info.Probed)
+        {
+            job.State = Job.StateFailed;
+            job.Message = "无法读取视频的流信息，已跳过（避免把字幕轨属性写错位置）";
+            _events.Log($"[失败] {job.Name}：{job.Message}");
+            return;
+        }
+
         job.MergedSubtitleSources = mergedSources;
         var tempJob = new Job(job.Video, prepared, job.Output, job.Duration, job.Info) { Uid = job.Uid };
         BuildCommandResult built = CommandBuilder.BuildCommand(tempJob, options, request.Ffmpeg);
@@ -281,20 +317,19 @@ public sealed class BatchProcessor
 
         job.FinishedAt = Formatting.UnixNow();
 
-        if (cancellationToken.IsCancellationRequested)
-        {
-            job.State = Job.StateCancelled;
-            job.Message = "已取消";
-            // ffmpeg 已启动后才取消：它可能已写出部分输出文件，清理掉避免残留半成品。
-            TryDeletePartialOutput(job.Output);
-        }
-        else if (code == 0 && File.Exists(job.Output))
+        // 先判「已经成功」再判取消：ffmpeg 写完输出与用户点停止之间有一个毫秒级窗口，
+        // 顺序反了会把一份完好成品当成半成品删掉，任务还显示「已取消」。
+        bool succeeded = code == 0 && File.Exists(job.Output);
+        if (succeeded)
         {
             job.State = Job.StateDone;
             job.Progress = 100.0;
             job.Message = "";
             try { job.Size = new FileInfo(job.Output).Length; }
             catch { job.Size = null; }
+
+            if (cancellationToken.IsCancellationRequested)
+                _events.Log($"[完成] {job.Name}：输出在取消生效前已完整写出，保留结果");
 
             if (options.Verify)
             {
@@ -323,6 +358,13 @@ public sealed class BatchProcessor
             // 替换源文件：只有「合并成功 + 校验通过」才删除原件。
             if (options.ReplaceSource)
                 ApplySourceReplacement(job, options, request, built, mergedSources);
+        }
+        else if (cancellationToken.IsCancellationRequested)
+        {
+            job.State = Job.StateCancelled;
+            job.Message = "已取消";
+            // ffmpeg 已启动后才取消：它可能已写出部分输出文件，清理掉避免残留半成品。
+            TryDeletePartialOutput(job.Output);
         }
         else
         {
@@ -384,10 +426,20 @@ public sealed class BatchProcessor
                 return;
             }
         }
-        else if (job.Info.Size > 0 && size < job.Info.Size * 0.5)
+        else
         {
-            _events.Log($"[保留] {job.Name}：输出体积明显偏小，未删除原件");
-            return;
+            // 关闭校验时只能靠体积兜底。源体积未知（探测失败）时等于没有任何证据，
+            // 一律不删原件——删源不可逆，宁可留下多余文件。
+            if (job.Info.Size <= 0)
+            {
+                _events.Log($"[保留] {job.Name}：未开启输出校验且源文件体积未知，无法证明输出完好，未删除原件");
+                return;
+            }
+            if (size < job.Info.Size * 0.5)
+            {
+                _events.Log($"[保留] {job.Name}：输出体积明显偏小，未删除原件");
+                return;
+            }
         }
 
         static bool SamePath(string a, string b)

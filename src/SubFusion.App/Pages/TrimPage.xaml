@@ -36,7 +36,7 @@
                 <StackPanel Spacing="2">
                     <TextBlock Text="视频裁剪" Style="{StaticResource PageTitleStyle}" />
                     <TextBlock Style="{StaticResource PageSubtitleStyle}"
-                               Text="按时间点截取一段并可按需旋转方向。默认无损切割（不重新编码）；切点会吸附到关键帧，实际范围在下方如实显示。" />
+                               Text="截取视频里的一段，还能顺便转方向。默认不重新编码（最快、不损画质）；开头会自动对齐到能切的位置，实际切出来的范围会在下面显示。" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <ProgressRing IsActive="{x:Bind ViewModel.Analyzing, Mode=OneWay}" Width="18" Height="18" />
@@ -226,7 +226,7 @@
                                   DisplayMemberPath="Label"
                                   SelectedItem="{x:Bind ViewModel.SelectedRotation, Mode=TwoWay}" />
                         <TextBlock Style="{StaticResource CaptionStyle}"
-                                   Text="无损模式下只写入显示方向（像素不动）；需要任何播放器都正确显示，请用「精确切割」，它会把画面真正转过来。" />
+                                   Text="无损模式只是标个方向，画面本身不动；要想在所有播放器里都显示正确，请选「精确切割」，它会真的把画面转过来。" />
                     </StackPanel>
                 </Border>
 
@@ -236,8 +236,8 @@
                          因此逐个绑到控件本身，而不是绑容器。 -->
                     <StackPanel Spacing="10">
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock Text="重新编码参数" Style="{StaticResource SectionTitleStyle}" />
-                            <TextBlock Text="（仅精确切割）" Style="{StaticResource CaptionStyle}"
+                            <TextBlock Text="重新编码时的设置" Style="{StaticResource SectionTitleStyle}" />
+                            <TextBlock Text="（只有选「精确切割」时才用得上）" Style="{StaticResource CaptionStyle}"
                                        VerticalAlignment="Center" />
                         </StackPanel>
                         <Grid ColumnSpacing="8" RowSpacing="8">
@@ -250,19 +250,31 @@
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
                             <StackPanel Grid.Row="0" Grid.Column="0" Spacing="4">
-                                <TextBlock Text="视频编码器" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="视频编码方式" Style="{StaticResource FieldLabelStyle}" />
                                 <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.Codecs}"
                                           SelectedItem="{x:Bind ViewModel.Codec, Mode=TwoWay}"
-                                          IsEnabled="{x:Bind ViewModel.IsPrecise, Mode=OneWay}" />
+                                          IsEnabled="{x:Bind ViewModel.IsPrecise, Mode=OneWay}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="x:String">
+                                                    <TextBlock Text="{x:Bind Converter={StaticResource TechLabel}}" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                </ComboBox>
                             </StackPanel>
                             <StackPanel Grid.Row="0" Grid.Column="1" Spacing="4">
-                                <TextBlock Text="preset" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="编码速度" Style="{StaticResource FieldLabelStyle}" />
                                 <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.Presets}"
                                           SelectedItem="{x:Bind ViewModel.Preset, Mode=TwoWay}"
-                                          IsEnabled="{x:Bind ViewModel.IsPrecise, Mode=OneWay}" />
+                                          IsEnabled="{x:Bind ViewModel.IsPrecise, Mode=OneWay}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="x:String">
+                                                    <TextBlock Text="{x:Bind Converter={StaticResource TechLabel}}" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                </ComboBox>
                             </StackPanel>
                             <StackPanel Grid.Row="1" Grid.Column="0" Spacing="4">
-                                <TextBlock Text="CRF" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="画质（数字越小越清晰、文件越大）" Style="{StaticResource FieldLabelStyle}" />
                                 <NumberBox Minimum="0" Maximum="51" SmallChange="1" SpinButtonPlacementMode="Compact"
                                            Value="{x:Bind ViewModel.Crf, Mode=TwoWay}"
                                            IsEnabled="{x:Bind ViewModel.IsPrecise, Mode=OneWay}" />
@@ -276,11 +288,17 @@
                     <StackPanel Spacing="10">
                         <TextBlock Text="输出" Style="{StaticResource SectionTitleStyle}" />
                         <StackPanel Spacing="4">
-                            <TextBlock Text="容器" Style="{StaticResource FieldLabelStyle}" />
+                            <TextBlock Text="输出格式" Style="{StaticResource FieldLabelStyle}" />
                             <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.Containers}"
-                                      SelectedItem="{x:Bind ViewModel.Container, Mode=TwoWay}" />
+                                      SelectedItem="{x:Bind ViewModel.Container, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="x:String">
+                                                    <TextBlock Text="{x:Bind Converter={StaticResource TechLabel}}" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
                             <TextBlock Style="{StaticResource CaptionStyle}"
-                                       Text="推荐 mkv：mp4 无法表示负时间戳，某些素材裁剪后音轨会被整体前移。" />
+                                       Text="建议选 MKV：有些素材用 MP4 保存后声音会整体往前跑，对不上画面。" />
                         </StackPanel>
                         <StackPanel Spacing="4">
                             <TextBlock Text="输出目录" Style="{StaticResource FieldLabelStyle}" />
@@ -317,15 +335,15 @@
                 <!-- 校验与其它 -->
                 <Border Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="8">
-                        <TextBlock Text="校验与轨道" Style="{StaticResource SectionTitleStyle}" />
-                        <CheckBox Content="完成后校验输出（时长 / 音画同步 / 首尾解码）"
+                        <TextBlock Text="检查与字幕" Style="{StaticResource SectionTitleStyle}" />
+                        <CheckBox Content="做完后检查（时长、音画同步、能否解码）"
                                   IsChecked="{x:Bind ViewModel.VerifyOutput, Mode=TwoWay}"
                                   ToolTipService.ToolTip="校验不通过时不会留下半成品文件" />
                         <TextBlock Style="{StaticResource CaptionStyle}"
-                                   Text="校验会把输出的音画相对偏移与源文件比对：裁剪必然改变绝对时间，但声音与画面必须保持原来的相对关系。超出容差即判定失败，不会留下音画不同步的文件。" />
-                        <CheckBox Content="保留字幕轨" IsChecked="{x:Bind ViewModel.KeepSubtitles, Mode=TwoWay}" />
+                                   Text="会拿成品和原片对比声音与画面的相对位置：裁剪会改变时间起点，但声音和画面必须还像原来那样对得上。差得太多就算失败，不会留下错乱的文件。" />
+                        <CheckBox Content="保留原来的字幕" IsChecked="{x:Bind ViewModel.KeepSubtitles, Mode=TwoWay}" />
                         <TextBlock Style="{StaticResource CaptionStyle}"
-                                   Text="关闭（默认）：字幕时间轴不会跟着重写，保留反而容易错位。开启后字幕轨原样复制，需要自己重新对齐时间。" />
+                                   Text="默认关着：字幕时间不会跟着重算，留着容易对不上画面。打开后字幕会原样复制，但要自己重新对时间。" />
                     </StackPanel>
                 </Border>
             </StackPanel>

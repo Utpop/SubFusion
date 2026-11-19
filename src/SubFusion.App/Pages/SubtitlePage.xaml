@@ -33,7 +33,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Spacing="2">
                     <TextBlock Text="字幕合并" Style="{StaticResource PageTitleStyle}" />
-                    <TextBlock Text="把外挂字幕合进视频；先添加视频，匹配到的字幕会自动挂载，可逐行调整。"
+                    <TextBlock Text="把外挂字幕合进视频。先加视频，字幕会自动配上，不满意可以手动改。"
                                Style="{StaticResource PageSubtitleStyle}" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
@@ -245,16 +245,28 @@
                             </Grid.RowDefinitions>
 
                             <StackPanel Grid.Row="0" Grid.Column="0" Spacing="4">
-                                <TextBlock Text="容器" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="输出格式" Style="{StaticResource FieldLabelStyle}" />
                                 <ComboBox HorizontalAlignment="Stretch"
                                           ItemsSource="{x:Bind ViewModel.Containers}"
-                                          SelectedItem="{x:Bind ViewModel.Container, Mode=TwoWay}" />
+                                          SelectedItem="{x:Bind ViewModel.Container, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="x:String">
+                                                    <TextBlock Text="{x:Bind Converter={StaticResource TechLabel}}" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
                             </StackPanel>
                             <StackPanel Grid.Row="0" Grid.Column="1" Spacing="4">
-                                <TextBlock Text="字幕方式" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="字幕怎么放" Style="{StaticResource FieldLabelStyle}" />
                                 <ComboBox HorizontalAlignment="Stretch"
                                           ItemsSource="{x:Bind ViewModel.Modes}"
-                                          SelectedItem="{x:Bind ViewModel.Mode, Mode=TwoWay}" />
+                                          SelectedItem="{x:Bind ViewModel.Mode, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="x:String">
+                                                    <TextBlock Text="{x:Bind Converter={StaticResource TechLabel}}" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
                             </StackPanel>
 
                             <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Spacing="4">
@@ -274,7 +286,7 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <CheckBox Content="同源同步" IsChecked="{x:Bind ViewModel.SyncOutputDir, Mode=TwoWay}"
+                                    <CheckBox Content="加文件时自动记住文件所在目录" IsChecked="{x:Bind ViewModel.SyncOutputDir, Mode=TwoWay}"
                                               ToolTipService.ToolTip="开启后，添加不同目录的文件时自动把输出目录同步到源目录" />
                                     <Button Grid.Column="1" Content="用源目录" Style="{StaticResource ToolbarButtonStyle}"
                                             Command="{x:Bind ViewModel.UseSourceDirCommand}" />
@@ -282,20 +294,20 @@
                             </StackPanel>
 
                             <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Spacing="4">
-                                <TextBlock Text="文件名后缀" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="文件名末尾加" Style="{StaticResource FieldLabelStyle}" />
                                 <TextBox Text="{x:Bind ViewModel.Suffix, Mode=TwoWay}"
                                          PlaceholderText="例如 _sub（留空则默认）" />
                             </StackPanel>
 
                             <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Spacing="2">
-                                <CheckBox Content="保留视频原有字幕轨" IsChecked="{x:Bind ViewModel.KeepExistingSubs, Mode=TwoWay}" />
-                                <CheckBox Content="保留元数据" IsChecked="{x:Bind ViewModel.KeepMetadata, Mode=TwoWay}" />
-                                <CheckBox Content="允许覆盖同名文件" IsChecked="{x:Bind ViewModel.Overwrite, Mode=TwoWay}" />
-                                <CheckBox Content="处理完成后校验输出" IsChecked="{x:Bind ViewModel.Verify, Mode=TwoWay}" />
+                                <CheckBox Content="保留视频里本来就有的字幕" IsChecked="{x:Bind ViewModel.KeepExistingSubs, Mode=TwoWay}" />
+                                <CheckBox Content="保留文件的标题、作者等信息" IsChecked="{x:Bind ViewModel.KeepMetadata, Mode=TwoWay}" />
+                                <CheckBox Content="名字一样时直接覆盖，不再询问" IsChecked="{x:Bind ViewModel.Overwrite, Mode=TwoWay}" />
+                                <CheckBox Content="做完后检查文件有没有坏" IsChecked="{x:Bind ViewModel.Verify, Mode=TwoWay}" />
                             </StackPanel>
 
                             <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Spacing="6">
-                                <CheckBox Content="合并成功后替换原文件" IsChecked="{x:Bind ViewModel.ReplaceSource, Mode=TwoWay}" />
+                                <CheckBox Content="完成后直接用新文件替换原视频（会删原文件）" IsChecked="{x:Bind ViewModel.ReplaceSource, Mode=TwoWay}" />
                                 <InfoBar Severity="Warning" IsClosable="False" IsOpen="{x:Bind ViewModel.ReplaceSource, Mode=OneWay}"
                                          Title="会删除原始文件"
                                          Message="仅在合并完成且校验通过时删除原视频与已合并字幕；校验失败则保留原件。" />
@@ -307,7 +319,7 @@
                 <!-- 编码 -->
                 <Border Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="10">
-                        <TextBlock Text="编码" Style="{StaticResource SectionTitleStyle}" />
+                        <TextBlock Text="编码方式" Style="{StaticResource SectionTitleStyle}" />
                         <Grid ColumnSpacing="8" RowSpacing="8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -321,35 +333,53 @@
                             </Grid.RowDefinitions>
 
                             <StackPanel Grid.Row="0" Grid.Column="0" Spacing="4">
-                                <TextBlock Text="视频编码" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="视频编码方式" Style="{StaticResource FieldLabelStyle}" />
                                 <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.Vcodecs}"
-                                          SelectedItem="{x:Bind ViewModel.Vcodec, Mode=TwoWay}" />
+                                          SelectedItem="{x:Bind ViewModel.Vcodec, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="x:String">
+                                                    <TextBlock Text="{x:Bind Converter={StaticResource TechLabel}}" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
                             </StackPanel>
                             <StackPanel Grid.Row="0" Grid.Column="1" Spacing="4">
-                                <TextBlock Text="音频编码" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="音频编码方式" Style="{StaticResource FieldLabelStyle}" />
                                 <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.Acodecs}"
-                                          SelectedItem="{x:Bind ViewModel.Acodec, Mode=TwoWay}" />
+                                          SelectedItem="{x:Bind ViewModel.Acodec, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="x:String">
+                                                    <TextBlock Text="{x:Bind Converter={StaticResource TechLabel}}" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
                             </StackPanel>
 
                             <StackPanel Grid.Row="1" Grid.Column="0" Spacing="4">
-                                <TextBlock Text="CRF" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="画质（数字越小越清晰、文件越大）" Style="{StaticResource FieldLabelStyle}" />
                                 <NumberBox Minimum="0" Maximum="51" SmallChange="1" SpinButtonPlacementMode="Compact"
                                            Value="{x:Bind ViewModel.Crf, Mode=TwoWay}" />
                             </StackPanel>
                             <StackPanel Grid.Row="1" Grid.Column="1" Spacing="4">
-                                <TextBlock Text="preset" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="编码速度" Style="{StaticResource FieldLabelStyle}" />
                                 <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.Presets}"
-                                          SelectedItem="{x:Bind ViewModel.Preset, Mode=TwoWay}" />
+                                          SelectedItem="{x:Bind ViewModel.Preset, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="x:String">
+                                                    <TextBlock Text="{x:Bind Converter={StaticResource TechLabel}}" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
                             </StackPanel>
 
                             <StackPanel Grid.Row="2" Grid.Column="0" Spacing="4">
-                                <TextBlock Text="并发任务" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="同时处理几个" Style="{StaticResource FieldLabelStyle}" />
                                 <NumberBox Minimum="1" Maximum="4" SmallChange="1" SpinButtonPlacementMode="Compact"
                                            Value="{x:Bind ViewModel.Workers, Mode=TwoWay}" />
                             </StackPanel>
 
                             <TextBlock Grid.Row="3" Grid.ColumnSpan="2" Style="{StaticResource CaptionStyle}"
-                                       Text="CRF 与 preset 仅在重新编码时生效；硬字幕会自动重新编码。" />
+                                       Text="画质和速度只在需要重新编码时才有作用；做硬字幕一定会重新编码。" />
                         </Grid>
                     </StackPanel>
                 </Border>
@@ -357,12 +387,12 @@
                 <!-- 字幕与匹配 -->
                 <Border Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="10">
-                        <TextBlock Text="字幕与匹配" Style="{StaticResource SectionTitleStyle}" />
-                        <CheckBox Content="字幕自动转为 UTF-8" IsChecked="{x:Bind ViewModel.ConvertEncoding, Mode=TwoWay}" />
-                        <CheckBox Content="扫描子文件夹" IsChecked="{x:Bind ViewModel.Recursive, Mode=TwoWay}" />
-                        <CheckBox Content="硬字幕时叠加全部字幕轨" IsChecked="{x:Bind ViewModel.HardMulti, Mode=TwoWay}" />
+                        <TextBlock Text="字幕设置" Style="{StaticResource SectionTitleStyle}" />
+                        <CheckBox Content="自动修正字幕乱码（转成通用编码）" IsChecked="{x:Bind ViewModel.ConvertEncoding, Mode=TwoWay}" />
+                        <CheckBox Content="连子文件夹里的文件一起找" IsChecked="{x:Bind ViewModel.Recursive, Mode=TwoWay}" />
+                        <CheckBox Content="硬字幕时把每条字幕都烧进去" IsChecked="{x:Bind ViewModel.HardMulti, Mode=TwoWay}" />
                         <StackPanel Spacing="4">
-                            <TextBlock Text="文件名匹配阈值" Style="{StaticResource FieldLabelStyle}" />
+                            <TextBlock Text="字幕匹配严格度" Style="{StaticResource FieldLabelStyle}" />
                             <NumberBox Minimum="0.4" Maximum="1.0" SmallChange="0.02" SpinButtonPlacementMode="Compact"
                                        Value="{x:Bind ViewModel.Threshold, Mode=TwoWay}" />
                         </StackPanel>

@@ -464,9 +464,21 @@ public static class OutputVerifier
         if (info.VStreams == 0 && plan.ExpectedVideo != 0)
             issues.Add("输出中没有视频流");
 
-        if (info.SStreams != plan.ExpectedSubs)
+        // 硬字幕 + 无可用轨时，命令把源字幕原样复制进输出：
+        // 这时不能拿 ExpectedSubs(=0，「没有新轨」) 去比对实际字幕数。
+        // 只有源字幕数量本身可信时才判，否则这一项无从核对，直接跳过。
+        if (plan.SubsFromSource)
+        {
+            if (plan.SubsSourceKnown && sourceInfo is not null && info.SStreams != sourceInfo.SStreams)
+                issues.Add(string.Format(CultureInfo.InvariantCulture,
+                    "字幕轨数量不符（期望沿用源文件的 {0} 条，实际 {1} 条）",
+                    sourceInfo.SStreams, info.SStreams));
+        }
+        else if (info.SStreams != plan.ExpectedSubs)
+        {
             issues.Add(string.Format(CultureInfo.InvariantCulture,
                 "字幕轨数量不符（期望 {0} 条，实际 {1} 条）", plan.ExpectedSubs, info.SStreams));
+        }
 
         if (plan.ExpectedAudio != 0 && info.AStreams == 0)
             issues.Add(string.Format(CultureInfo.InvariantCulture,

@@ -67,23 +67,43 @@ public static class FrameGrabber
                 Task copy = process.StandardOutput.BaseStream.CopyToAsync(buffer, cancellationToken);
                 Task drain = process.StandardError.ReadToEndAsync(CancellationToken.None);
 
-                Task finished = await Task.WhenAny(copy, Task.Delay(TimeSpan.FromSeconds(timeoutSeconds),
-                    cancellationToken)).ConfigureAwait(false);
+                Task timeout = Task.Delay(TimeSpan.FromSeconds(timeoutSeconds), CancellationToken.None);
+                Task finished = await Task.WhenAny(copy, timeout).ConfigureAwait(false);
                 if (finished != copy)
                 {
+                    // 取帧是拖动时间轴时的高频操作：Kill 之后必须等进程真正退出，
+                    // 否则残留的 ffmpeg 与管道句柄会随拖动次数线性累积。
                     try { process.Kill(entireProcessTree: true); } catch { /* 已退出 */ }
+                    try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2))
+                        .ConfigureAwait(false); } catch { /* 忽略 */ }
+                    Observe(copy);
+                    Observe(drain);
                     return null;
                 }
 
                 await copy.ConfigureAwait(false);
                 await Task.WhenAny(drain, Task.Delay(2000)).ConfigureAwait(false);
+                Observe(drain);
                 try { await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) { return null; }
             }
-            catch (OperationCanceledException) { return null; }
+            catch (OperationCanceledException)
+            {
+                try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2))
+                    .ConfigureAwait(false); } catch { /* 忽略 */ }
+                return null;
+            }
             catch { return null; }
 
             return buffer.Length > 0 ? buffer.ToArray() : null;
         }
     }
+
+    /// <summary>
+    /// 观察被放弃的任务的异常。
+    /// 取帧在拖动时会被高频取消，被 Kill 打断的管道读取/写出任务会以异常结束；
+    /// 没人 await 它们就会变成未观察异常，重负载下不断累积。
+    /// </summary>
+    private static void Observe(Task task)
+        => _ = task.ContinueWith(static t => _ = t.Exception, TaskScheduler.Default);
 }

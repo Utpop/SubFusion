@@ -30,5 +30,12 @@ public sealed partial class MergeGroupViewModel : ObservableObject
     /// <summary>组内文件名，按合并顺序排列。</summary>
     public ObservableCollection<string> Files { get; } = new();
 
+    /// <summary>
+    /// 组内文件名的一行展示。Files 变化后必须显式通知：
+    /// x:Bind 默认 OneTime，计算属性不会因为集合内容变化而刷新，
+    /// 结果就是卡片上只有「组合 N / 3 个」而看不到任何文件名。
+    /// </summary>
     public string FileListText => string.Join(" · ", Files);
+
+    public void NotifyFilesChanged() => OnPropertyChanged(nameof(FileListText));
 }

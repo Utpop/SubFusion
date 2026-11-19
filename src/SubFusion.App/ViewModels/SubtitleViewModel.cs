@@ -648,8 +648,30 @@ public sealed partial class SubtitleViewModel : ObservableObject, IBatchEvents
         return options;
     }
 
+    /// <summary>
+    /// 启动流程进行中（含尚未把 IsRunning 置真的准备阶段：探测、剔除无效字幕、建临时目录）。
+    /// 没有它，准备阶段（可能跑几十秒）里第二次点「开始」会走到 _cancel?.Dispose()，
+    /// 把第一次流程正在用的令牌释放掉，第一次随后在 CreateLinkedTokenSource 上命中
+    /// ObjectDisposedException，表现为「点了开始没有任何反应」。
+    /// </summary>
+    private bool _starting;
+
     [RelayCommand(CanExecute = nameof(CanStart))]
     private async Task StartAsync()
+    {
+        if (IsRunning || _starting) return;
+        _starting = true;
+        try
+        {
+            await StartCoreAsync();
+        }
+        finally
+        {
+            _starting = false;
+        }
+    }
+
+    private async Task StartCoreAsync()
     {
         if (IsRunning) return;
         string? ffmpeg = _settings.FfmpegPath;
@@ -786,7 +808,12 @@ public sealed partial class SubtitleViewModel : ObservableObject, IBatchEvents
         }
         catch (Exception ex)
         {
+            // Core 的 AllDone 不会在异常路径上触发，任务中心的那条记录就永远停在
+            // 「运行中」——CanCancel 一直为 true，用户还能点取消却没有任何效果。
+            // 这里必须补一个终态，并让页面说清楚发生了什么。
             Log("批量任务异常：" + ex.Message);
+            StatusText = "批量任务异常：" + ex.Message;
+            if (_record is not null) _tasks.Finish(_record, TaskState.Failed, ex.Message);
         }
         finally
         {
@@ -1151,6 +1178,9 @@ public sealed partial class SubtitleViewModel : ObservableObject, IBatchEvents
     /// <summary>退出前调用：取消探测、回收临时目录。返回 false 表示用户取消了退出。</summary>
     public async Task<bool> ConfirmCloseAsync()
     {
+        // 启动流程的准备阶段（探测/剔除无效字幕）也算「正在忙」：此时 IsRunning 还是 false，
+        // 直接放行会让窗口在准备中途关掉，留下的子进程与临时目录无人收尾。
+        if (_starting && !IsRunning) _cancel?.Cancel();
         if (!IsRunning) return true;
         bool yes = await _ui.AskYesNoAsync("字幕合并任务正在运行中，确定退出吗？");
         if (!yes) return false;

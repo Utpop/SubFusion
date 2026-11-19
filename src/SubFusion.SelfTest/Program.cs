@@ -3120,7 +3120,8 @@ internal static class Program
 
             // ---- 无损切割 ----
             string copyOut = Path.Combine(work, "copy_cut.mkv");
-            (MediaBundle srcBundle, _, int srcRotation) = await task.AnalyzeAsync(source);
+            (MediaBundle srcBundle, _, int? srcRotationNullable) = await task.AnalyzeAsync(source);
+            int srcRotation = srcRotationNullable ?? 0;
             Check("N7 源文件探测成功", srcBundle.Success, srcBundle.Error);
             SyncSample srcSync = await AvSyncProbe.ProbeAsync(ffprobe, source);
             Check("N8 源文件音画起点均可探测", srcSync.Ok && srcSync.HasAudio, srcSync.Error);

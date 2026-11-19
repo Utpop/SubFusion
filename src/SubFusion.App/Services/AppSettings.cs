@@ -18,6 +18,8 @@ public sealed class AppSettings
     private readonly object _saveGate = new();
     private bool _suppressSave;
     private bool _dirty;
+    /// <summary>已排入一次延迟写盘（用于合并连续修改）。</summary>
+    private bool _savePending;
 
     private AppSettings(AppConfig config) => _config = config;
 
@@ -30,7 +32,27 @@ public sealed class AppSettings
         if (EqualityComparer<T>.Default.Equals(field, value)) return;
         field = value;
         _dirty = true;
-        if (!_suppressSave) Save();
+        if (!_suppressSave) ScheduleSave();
+    }
+
+    /// <summary>
+    /// 合并写盘：拖动 NumberBox 时每个增量都会触发一次属性赋值，
+    /// 逐次同步写文件（WriteAllText + Move，且跑在 UI 线程）会让界面明显发滞，
+    /// 还会连带触发下游的重新分析。这里把 250 ms 内的连续修改合并成一次落盘。
+    /// </summary>
+    private void ScheduleSave()
+    {
+        lock (_saveGate)
+        {
+            if (_savePending) return;
+            _savePending = true;
+        }
+
+        _ = Task.Delay(250).ContinueWith(_ =>
+        {
+            lock (_saveGate) _savePending = false;
+            Save();
+        }, TaskScheduler.Default);
     }
 
     #region 外观

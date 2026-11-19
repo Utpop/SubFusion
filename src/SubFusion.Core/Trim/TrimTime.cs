@@ -25,13 +25,17 @@ public static class TrimTime
         if (parts.Length is < 1 or > 3) return false;
 
         double total = 0;
-        foreach (string part in parts)
+        for (int i = 0; i < parts.Length; i++)
         {
+            string part = parts[i];
             // .NET 的 TryParse(NumberStyles.Float) 会接受 NaN/Infinity；NaN < 0 为 false，
             // 若放行会把 "NaN" 写进 -ss/-t 让 ffmpeg 失败，而不是给出"时间格式非法"。
             if (!double.TryParse(part, NumberStyles.Float, CultureInfo.InvariantCulture, out double piece) ||
                 !double.IsFinite(piece) || piece < 0)
                 return false;
+            // 非末段是分/秒的进位单位，必须 <60：否则 "1:75" 会被静默解释成 135 秒——
+            // 那不是用户输入的意思，而是一次实实在在切错。
+            if (i < parts.Length - 1 && piece >= 60) return false;
             total = total * 60 + piece;
         }
         if (!double.IsFinite(total)) return false;
@@ -42,7 +46,9 @@ public static class TrimTime
     /// <summary>秒 → hh:mm:ss.fff；负数按 0 处理。</summary>
     public static string Format(double seconds)
     {
-        if (seconds < 0) seconds = 0;
+        // NaN/∞ 会让 TimeSpan.FromSeconds 直接抛 ArgumentException，
+        // 而上游的 bundle.Duration 在探测失败时可能是 NaN——格式化不该成为崩溃点。
+        if (!double.IsFinite(seconds) || seconds < 0) seconds = 0;
         var span = TimeSpan.FromSeconds(seconds);
         return string.Format(CultureInfo.InvariantCulture, "{0:00}:{1:00}:{2:00}.{3:000}",
             (int)span.TotalHours, span.Minutes, span.Seconds, span.Milliseconds);

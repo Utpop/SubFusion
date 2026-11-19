@@ -134,6 +134,10 @@ public static class MediaInspector
             else if (type == "subtitle")
             {
                 bundle.SubtitleStreamCount++;
+                // dvb_subtitle / hdmv_pgs_subtitle / dvd_subtitle 等图形字幕无法进 mp4。
+                string subCodec = Str(stream, "codec_name");
+                if (subCodec is "hdmv_pgs_subtitle" or "dvd_subtitle" or "dvb_subtitle" or "xsub")
+                    bundle.BitmapSubtitleCount++;
             }
         }
     }

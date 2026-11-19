@@ -91,6 +91,9 @@ public static class CommandBuilder
             ? (options.HardMulti ? usableSubs : usableSubs.Take(1).ToList())
             : usableSubs;
 
+        // ExpectedSubs 的语义与 Python v1.1 严格一致（冻结基准逐项比对），因此这里
+        // 无条件采用 SStreams。探测失败它会是 0，那只影响校验口径（见 SubsSourceKnown），
+        // 不能反过来改变 plan 里的期望值。
         int existingSubs = 0;
         if (options.Mode == "soft" && options.KeepExistingSubs)
             existingSubs = job.Info.SStreams;
@@ -101,7 +104,16 @@ public static class CommandBuilder
             Container = options.Container,
             ExpectedVideo = 1,
             ExpectedAudio = job.Info.AStreams,
+            // 这一项保持与 Python v1.1 完全一致（冻结基准逐项比对 ExpectedSubs）：
+            // 「硬字幕 + 无可用轨」时它仍是 0，因为语义是「期望有 0 条新字幕轨」。
+            // 但那时命令会 -map 0:s? 把源字幕原样复制进输出，实际数量等于源字幕数，
+            // 直接用 0 去校验必然误报。这类「期望值本身不完整」的情形改由
+            // OutputPlan.SubsFromSource 标记，交给 OutputVerifier 换一种算法核对。
             ExpectedSubs = options.Mode == "hard" ? 0 : usableSubs.Count + existingSubs,
+            // 硬字幕但没有可烧录的轨：命令退化成「复制源字幕」，校验口径随之改变。
+            SubsFromSource = options.Mode == "hard" && usableSubs.Count == 0,
+            // 探测失败时 SStreams 不可信，无法给出「源字幕有几条」这个前提。
+            SubsSourceKnown = job.Info.Probed,
             BurnedSubs = options.Mode == "hard" ? tracksToBurn.Count : 0,
             Vcodec = options.Vcodec,
             Acodec = options.Acodec,

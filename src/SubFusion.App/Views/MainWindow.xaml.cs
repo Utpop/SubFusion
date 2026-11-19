@@ -28,6 +28,10 @@ public sealed partial class MainWindow : Window, IUiServices
     private readonly IntPtr _hwnd;
     private readonly AppWindow _appWindow;
     private bool _allowClose;
+    /// <summary>关闭确认流程是否正在进行（防止确认框显示期间的重入）。</summary>
+    private bool _closing;
+    /// <summary>窗口已进入关闭流程：此后到达的后台回调直接丢弃，不再排队。</summary>
+    private volatile bool _closingWindow;
     private ScrollViewer? _logScroll;
 
     // GUI 线程回调队列：TryEnqueue 失败时记录，关闭时排空，避免丢回调。
@@ -830,6 +834,10 @@ public sealed partial class MainWindow : Window, IUiServices
         });
         if (!queued)
         {
+            // 窗口正在关闭时队列不会再被排空：此时排队等于永久堆积闭包（它们还持有
+            // ViewModel / TaskRecord 引用），而且这些回调本来也不会执行。
+            // 直接丢弃比「留在队列里假装稍后执行」更诚实。
+            if (_closingWindow) return;
             CrashGuard.Write("RunOnUiThread", new InvalidOperationException("DispatcherQueue.TryEnqueue failed"));
             lock (_uiQueueGate) _uiQueue.Enqueue(action);
         }
@@ -906,17 +914,30 @@ public sealed partial class MainWindow : Window, IUiServices
     {
         if (_allowClose) return;
         args.Cancel = true;
-        bool confirmed = await ViewModel.ConfirmCloseAsync();
-        if (!confirmed) return;
-        // 确认之后的所有 UI 变更显式回到 UI 线程执行，避免由后台续帧触发。
-        _dispatcher.TryEnqueue(() =>
+        // 关闭确认期间用户再点一次 X / Alt+F4 会重入：第二次必须直接吞掉，
+        // 否则会再弹一个确认框；更糟的是第一次对话框返回「否」之后，
+        // 第二次的流程仍可能把 _allowClose 置真并关窗，用户刚点的「否」被无视。
+        if (_closing) return;
+        _closing = true;
+        try
         {
-            _allowClose = true;
-            DrainUiQueue();
-            NativeWindowHelper.RemoveWindow(_hwnd);
-            App.ClearWindow();
-            Close();
-        });
+            bool confirmed = await ViewModel.ConfirmCloseAsync();
+            if (!confirmed) return;
+            // 确认之后的所有 UI 变更显式回到 UI 线程执行，避免由后台续帧触发。
+            _closingWindow = true;
+            _dispatcher.TryEnqueue(() =>
+            {
+                _allowClose = true;
+                DrainUiQueue();
+                NativeWindowHelper.RemoveWindow(_hwnd);
+                App.ClearWindow();
+                Close();
+            });
+        }
+        finally
+        {
+            _closing = false;
+        }
     }
 
     #endregion

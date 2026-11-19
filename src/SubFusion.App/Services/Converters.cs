@@ -214,3 +214,45 @@ public sealed class BoolToGlyphConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, string language)
         => throw new NotSupportedException();
 }
+
+/// <summary>
+/// 技术值 → 大白话标签。只用于下拉框的显示（ItemTemplate），
+/// SelectedItem 绑定的仍是原始技术值，所以设置存储、命令生成完全不受影响。
+/// 未登记的值原样返回，避免漏配时出现空白。
+/// </summary>
+public sealed class TechLabelConverter : IValueConverter
+{
+    private static readonly IReadOnlyDictionary<string, string> Labels =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["mkv"] = "MKV（推荐·可装多条字幕和章节）",
+            ["mp4"] = "MP4（通用·手机和网页都能放）",
+            ["same"] = "跟原文件一样",
+            [""] = "自动（跟着输入走·推荐）",
+            ["soft"] = "软字幕（能切换/关闭·推荐）",
+            ["hard"] = "硬字幕（直接烧进画面·不能关）",
+            ["copy"] = "不重新编码（直接复制·最快）",
+            ["libx264"] = "H.264（通用·推荐）",
+            ["libx265"] = "H.265（文件更小·编码更慢）",
+            ["h264_nvenc"] = "H.264 显卡加速（需英伟达显卡）",
+            ["aac"] = "AAC（通用·推荐）",
+            ["ultrafast"] = "极快（文件最大）",
+            ["veryfast"] = "很快",
+            ["fast"] = "快",
+            ["medium"] = "均衡（推荐）",
+            ["slow"] = "慢（文件更小）",
+            ["veryslow"] = "极慢（文件最小）",
+            ["Contain"] = "完整显示（不够的地方补黑边）",
+            ["Cover"] = "铺满画面（多出来的裁掉）",
+            ["Stretch"] = "直接拉满（画面可能变形）",
+            ["Auto"] = "自动（能不重编码就不重编码·推荐）",
+            ["Reencode"] = "统一重新编码",
+        };
+
+    public object Convert(object value, Type targetType, object parameter, string language)
+        => value is string s && Labels.TryGetValue(s, out string? label) ? label : (value ?? "");
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language)
+        => throw new NotSupportedException();
+}
+

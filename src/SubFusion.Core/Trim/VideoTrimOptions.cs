@@ -101,8 +101,23 @@ public sealed class VideoTrimOptions
         return c.Length == 0 ? "mkv" : c;
     }
 
+    /// <summary>
+    /// 把请求区间收敛到「文件实际时长」内。引擎、命令构造与参数自检必须用同一份结果，
+    /// 否则会出现「界面允许开始、Validate 却报错」或「-t 与进度分母不一致」。
+    /// </summary>
+    /// <param name="sourceDuration">输入文件时长（秒）；&lt;= 0 表示未知，按请求值原样返回。</param>
+    public (double Start, double End) NormalizeRange(double sourceDuration)
+    {
+        double end = sourceDuration > 0 ? Math.Min(EndSeconds, sourceDuration) : EndSeconds;
+        return (StartSeconds, end);
+    }
+
     /// <summary>参数自检；返回空列表表示可以执行。</summary>
-    public List<string> Validate()
+    /// <param name="sourceDuration">
+    /// 已知的输入时长（秒）。给出时按「收敛后的终点」判定时长下限，与引擎保持一致；
+    /// 0 表示尚不知道（参数还没探测），只用请求值做基础校验。
+    /// </param>
+    public List<string> Validate(double sourceDuration = 0)
     {
         var errors = new List<string>();
         if (string.IsNullOrWhiteSpace(Input)) errors.Add("未选择输入文件");
@@ -117,11 +132,14 @@ public sealed class VideoTrimOptions
                 errors.Add("输出路径不能与输入文件相同");
         }
 
-        if (StartSeconds < 0) errors.Add("起点不能为负数");
-        if (EndSeconds <= StartSeconds)
+        // 终点先与文件实际时长收敛，再做判定：不收敛就会出现「用户填 70s、文件只有 60s，
+        // 界面拦截说时长足够，引擎却按 60s 截断并再次失败」这种两套结论。
+        (double normalizedStart, double normalizedEnd) = NormalizeRange(sourceDuration);
+        if (normalizedStart < 0) errors.Add("起点不能为负数");
+        if (normalizedEnd <= normalizedStart)
             errors.Add(string.Format(CultureInfo.InvariantCulture,
-                "终点必须大于起点（当前 {0:0.###}s → {1:0.###}s）", StartSeconds, EndSeconds));
-        else if (EndSeconds - StartSeconds < 0.1)
+                "终点必须大于起点（当前 {0:0.###}s → {1:0.###}s）", normalizedStart, normalizedEnd));
+        else if (normalizedEnd - normalizedStart < 0.1)
             errors.Add("裁剪时长至少需要 0.1 秒");
 
         string container = NormalizedContainer();

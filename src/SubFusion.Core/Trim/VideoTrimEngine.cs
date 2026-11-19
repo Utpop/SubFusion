@@ -26,6 +26,9 @@ public sealed class VideoTrimEngine
     private readonly FfmpegTools _tools;
     private readonly IProgress<TrimProgress>? _progress;
 
+    /// <summary>本次任务渲染出的临时文件（最终落盘前的一切操作都只碰它）。</summary>
+    private string? _renderPath;
+
     public VideoTrimEngine(FfmpegTools tools, IProgress<TrimProgress>? progress = null)
     {
         _tools = tools;
@@ -33,14 +36,18 @@ public sealed class VideoTrimEngine
     }
 
     /// <summary>只做分析：探测输入并扫描关键帧，不产生任何输出文件。</summary>
-    public async Task<(MediaBundle Bundle, KeyframeIndex Keyframes, int SourceRotation)> AnalyzeAsync(
+    /// <param name="SourceRotation">
+    /// 源文件显示角度；null 表示**没能读到**（不等于 0°）。界面据此区分
+    /// 「没有显示方向」与「无法读取显示方向」，后者要提示用户可能丢失方向。
+    /// </param>
+    public async Task<(MediaBundle Bundle, KeyframeIndex Keyframes, int? SourceRotation)> AnalyzeAsync(
         string inputPath, CancellationToken cancellationToken = default)
     {
         MediaBundle bundle = await MediaInspector.InspectAsync(_tools.Ffprobe ?? "", inputPath,
             cancellationToken).ConfigureAwait(false);
         KeyframeIndex keyframes = await KeyframeScanner.ScanAsync(_tools.Ffprobe ?? "", inputPath,
             cancellationToken).ConfigureAwait(false);
-        int rotation = await RotationProbe.ReadAsync(_tools.Ffprobe ?? "", inputPath, cancellationToken)
+        int? rotation = await RotationProbe.TryReadAsync(_tools.Ffprobe ?? "", inputPath, cancellationToken)
             .ConfigureAwait(false);
         return (bundle, keyframes, rotation);
     }
@@ -51,6 +58,7 @@ public sealed class VideoTrimEngine
         double startedAt = Formatting.UnixNow();
         var diagnostics = new List<string>();
         var notices = new List<string>();
+        _renderPath = null;
 
         void Report(TrimStage stage, double percent, string message, double speed = 0, double? eta = null)
             => _progress?.Report(new TrimProgress(stage, Math.Clamp(percent, 0, 100), message, speed, eta));
@@ -85,6 +93,14 @@ public sealed class VideoTrimEngine
             cancellationToken.ThrowIfCancellationRequested();
             if (!bundle.Success)
                 return Fail(taskId, TrimStage.Probing, "输入文件无法读取：" + bundle.Error, diagnostics, startedAt);
+
+            // mp4 + 图形字幕：容器装不下 PGS/VobSub，直接 -map 会让 ffmpeg 以非 0 退出，
+            // 用户只能看到「切割失败」。提前拦下并给出可操作的提示。
+            if (options.KeepSubtitles && options.NormalizedContainer() == "mp4" &&
+                TrimCommandBuilder.HasBitmapSubtitles(bundle))
+                return Fail(taskId, TrimStage.Validating,
+                    "MP4 容器无法保存图形字幕（PGS/VobSub）。请改选 MKV，或关闭「保留字幕轨」。",
+                    diagnostics, startedAt);
             diagnostics.Add("[探测] " + bundle.Summary);
 
             VideoStreamInfo? video = bundle.PrimaryVideo;
@@ -97,7 +113,8 @@ public sealed class VideoTrimEngine
                     diagnostics, startedAt);
 
             // 终点越界时按实际时长收敛，而不是直接失败：用户大多是从播放器里看到一个「差不多」的终点。
-            double requestedEnd = Math.Min(options.EndSeconds, sourceDuration);
+            // 收敛规则与 Validate / TrimCommandBuilder 共用 NormalizeRange，避免三处各算一遍。
+            double requestedEnd = options.NormalizeRange(sourceDuration).End;
             if (requestedEnd < options.EndSeconds - 0.05)
                 notices.Add(string.Format(CultureInfo.InvariantCulture,
                     "终点 {0:0.###}s 超出文件时长，已按实际时长 {1:0.###}s 裁剪",
@@ -149,8 +166,11 @@ public sealed class VideoTrimEngine
                     diagnostics, startedAt);
 
             // 4) 旋转方案
-            int sourceRotation = await RotationProbe.ReadAsync(_tools.Ffprobe!, options.Input,
+            int? probedRotation = await RotationProbe.TryReadAsync(_tools.Ffprobe!, options.Input,
                 cancellationToken).ConfigureAwait(false);
+            if (probedRotation is null)
+                notices.Add("未能读取源文件的显示方向，输出按无旋转处理；若素材是竖屏拍摄，请确认画面方向");
+            int sourceRotation = probedRotation ?? 0;
             RotationPlan rotation = RotationPlan.Create(sourceRotation, options.Rotation, options.CopiesStreams);
             foreach (string note in rotation.Notes) notices.Add(note);
             diagnostics.Add("[旋转] " + rotation.Describe() +
@@ -158,8 +178,16 @@ public sealed class VideoTrimEngine
                             rotation.TargetRotation + "°）");
 
             // 5) 执行
+            //
+            // 绝不能直接写最终路径：ffmpeg 会先截断同名文件，一旦切割失败或用户取消，
+            // 「校验失败就删半成品」的清理逻辑会把用户原本放在那里、与本次任务无关的文件
+            // 一起删掉。先渲染到本任务专属临时文件，校验通过后再原子改名落盘，
+            // 失败路径只会清理自己创建的那个文件。
+            string renderPath = TempRenderPath(outputPath, options, taskId);
+            _renderPath = renderPath;
             Report(TrimStage.Cutting, 10, options.CopiesStreams ? "无损切割…" : "精确切割（重编码所选区间）…");
-            List<string> cmd = TrimCommandBuilder.Build(options, bundle, actualStart, rotation, _tools.Ffmpeg);
+            List<string> cmd = TrimCommandBuilder.Build(options, bundle, actualStart, rotation, _tools.Ffmpeg,
+                renderPath);
             diagnostics.Add("[命令] " + Formatting.CommandText(cmd));
 
             (int code, string error) = await FfmpegRunner.RunFfmpegAsync(
@@ -170,13 +198,16 @@ public sealed class VideoTrimEngine
 
             // 先判定取消：否则「用户点了取消」会被报成「切割失败」。
             cancellationToken.ThrowIfCancellationRequested();
-            if (code != 0 || !File.Exists(outputPath))
+            if (code != 0 || !File.Exists(renderPath))
+            {
+                TryDelete(renderPath);
                 return Fail(taskId, TrimStage.Cutting,
                     FfmpegDiagnostics.Describe("切割失败：" + LastLines(error), error), diagnostics, startedAt);
+            }
 
-            // 6) 校验
+            // 6) 校验（仍校验临时文件，通过后才动最终路径）
             Report(TrimStage.Verifying, 92, "校验输出文件…");
-            MediaBundle output = await MediaInspector.InspectAsync(_tools.Ffprobe!, outputPath,
+            MediaBundle output = await MediaInspector.InspectAsync(_tools.Ffprobe!, renderPath,
                 cancellationToken, options.ProbeTimeoutSeconds).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -191,10 +222,11 @@ public sealed class VideoTrimEngine
             {
                 issues.AddRange(VerifyDuration(actualDuration, outputDuration, video.EffectiveFrameRate));
 
+                // 探测超时按用户设置透传：默认 30 秒对网络盘/大文件容易误判成「未能核实」。
                 SyncSample sourceSync = await AvSyncProbe.ProbeAsync(_tools.Ffprobe!, options.Input,
-                    cancellationToken).ConfigureAwait(false);
-                SyncSample outputSync = await AvSyncProbe.ProbeAsync(_tools.Ffprobe!, outputPath,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken, options.ProbeTimeoutSeconds).ConfigureAwait(false);
+                SyncSample outputSync = await AvSyncProbe.ProbeAsync(_tools.Ffprobe!, renderPath,
+                    cancellationToken, options.ProbeTimeoutSeconds).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
 
                 sourceOffset = sourceSync.Offset;
@@ -207,14 +239,17 @@ public sealed class VideoTrimEngine
                     "[同步] 容差 {0:0.###}s（按帧长自动计算）", syncTolerance));
                 (bool syncOk, drift, string syncMessage) =
                     AvSyncProbe.Compare(sourceSync, outputSync, syncTolerance);
-                syncVerified = syncOk;
+                // 只有「真的比较过两侧」才算核实。源侧探测失败时 Compare 会放行，
+                // 但那不构成证据，界面上不能显示成「已核实」。
+                syncVerified = syncOk && sourceSync.Ok && outputSync.Ok;
                 diagnostics.Add("[同步] " + syncMessage);
                 if (!syncOk) issues.Add(syncMessage);
+                else if (!syncVerified) notices.Add("未能核实音画同步：" + syncMessage);
 
                 // 首尾抽样解码：能拦住「文件被截断」这类时长断言看不出的问题。
                 // CheckIntegrityAsync 不接受 token（内部 ffmpeg 最长 60s），这里用 WaitAsync
                 // 把取消立刻传播出去，避免点停止后界面卡住一分钟（与 merge 引擎一致）。
-                issues.AddRange(await OutputVerifier.CheckIntegrityAsync(_tools.Ffmpeg, outputPath)
+                issues.AddRange(await OutputVerifier.CheckIntegrityAsync(_tools.Ffmpeg, renderPath)
                     .WaitAsync(cancellationToken).ConfigureAwait(false));
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -227,8 +262,9 @@ public sealed class VideoTrimEngine
 
             if (issues.Count > 0)
             {
-                // 校验不通过时删除半成品：留下一个音画不同步的文件比没有文件更糟。
-                TryDelete(outputPath);
+                // 只删本任务渲染的临时文件。最终路径上可能有用户自己放的文件，
+                // 本次任务从未写过它，绝不能因为「校验不通过」去动它。
+                TryDelete(renderPath);
                 return new TrimResult
                 {
                     TaskId = taskId,
@@ -242,7 +278,7 @@ public sealed class VideoTrimEngine
                     Snapped = snapped,
                     OutputDuration = outputDuration,
                     VideoCopied = options.CopiesStreams,
-                    AudioCopied = options.CopiesStreams,
+                    AudioCopied = bundle.HasAudio && options.CopiesStreams,
                     SourceSyncOffset = sourceOffset,
                     OutputSyncOffset = outputOffset,
                     SyncDrift = drift,
@@ -263,6 +299,25 @@ public sealed class VideoTrimEngine
                 notices.Add(string.Format(CultureInfo.InvariantCulture,
                     "源文件有 {0} 条音轨，只保留了第一条", bundle.Audios.Count));
 
+            // 校验全过之后才把临时文件换成最终路径：跨卷时是一次带进度的复制，
+            // 同卷时只是改名。走到这里之前的所有失败路径都只碰过 renderPath，
+            // 最终路径上用户原有的文件始终未被写过。
+            Report(TrimStage.Completed, 99, "写入输出文件…");
+            try
+            {
+                await FileMover.MoveAsync(renderPath, outputPath, null, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                TryDelete(renderPath);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                TryDelete(renderPath);
+                return Fail(taskId, TrimStage.Completed, "写入输出文件失败：" + ex.Message, diagnostics, startedAt);
+            }
+
             diagnostics.Add(string.Format(CultureInfo.InvariantCulture,
                 "[完成] 输出 {0:0.###}s（请求 {1:0.###}s）", outputDuration, actualDuration));
 
@@ -280,7 +335,7 @@ public sealed class VideoTrimEngine
                 Snapped = snapped,
                 OutputDuration = outputDuration,
                 VideoCopied = options.CopiesStreams,
-                AudioCopied = options.CopiesStreams,
+                AudioCopied = bundle.HasAudio && options.CopiesStreams,
                 SourceSyncOffset = sourceOffset,
                 OutputSyncOffset = outputOffset,
                 SyncDrift = drift,
@@ -292,7 +347,8 @@ public sealed class VideoTrimEngine
         }
         catch (OperationCanceledException)
         {
-            TryDelete(outputPathFrom(options));
+            // 取消只清理本任务渲染出的临时文件：最终路径走到这里时可能从未被写过。
+            TryDelete(_renderPath ?? "");
             return new TrimResult
             {
                 TaskId = taskId,
@@ -312,9 +368,35 @@ public sealed class VideoTrimEngine
         }
     }
 
-    private static string outputPathFrom(VideoTrimOptions options)
+    /// <summary>
+    /// 渲染用的临时文件路径。
+    ///
+    /// 落在哪由 TempDirectory 决定：用户显式指定时先用它，否则与输出同目录
+    /// （同卷时最后一步 File.Move 只是改名，瞬时完成且零额外空间）。
+    /// 文件名带任务号前缀，避免同目录并发任务互相覆盖。
+    /// </summary>
+    private static string TempRenderPath(string outputPath, VideoTrimOptions options, string taskId)
     {
-        try { return Path.GetFullPath(options.OutputPath); } catch { return options.OutputPath; }
+        string suffix = "subfusion_trim_" + taskId[..12] + Path.GetExtension(outputPath);
+        if (!string.IsNullOrEmpty(options.TempDirectory))
+        {
+            string custom = Path.GetFullPath(options.TempDirectory!);
+            Directory.CreateDirectory(custom);
+            return Path.Combine(custom, suffix);
+        }
+
+        string dir = Path.GetDirectoryName(outputPath) ?? Path.GetTempPath();
+        string beside = Path.Combine(dir, "." + suffix);
+        try
+        {
+            Directory.CreateDirectory(dir);
+            return beside;
+        }
+        catch
+        {
+            // 输出目录不可写：退回系统临时目录，最后由 FileMover 跨卷搬运。
+            return Path.Combine(Path.GetTempPath(), suffix);
+        }
     }
 
     /// <summary>

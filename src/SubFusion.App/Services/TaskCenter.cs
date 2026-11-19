@@ -243,13 +243,19 @@ public sealed class TaskCenter : ObservableObject
 
     private void Trim()
     {
+        bool removed = false;
         while (Tasks.Count > MaxRecords)
         {
             TaskRecord oldest = Tasks[^1];
             if (!oldest.IsFinished) break;      // 运行中的任务不淘汰
             Tasks.RemoveAt(Tasks.Count - 1);
             oldest.Cancellation.Dispose();
+            removed = true;
         }
+        // 淘汰会让「当前选中项」失效，必须通知出去：否则详情区仍绑着一条已释放取消令牌的
+        // 记录，用户点「取消」只会命中 ObjectDisposedException 的静默分支，
+        // 界面停在「正在取消…」而永远不生效。
+        if (removed) RaiseChanged();
     }
 
     private DateTime _lastChangedRaise = DateTime.MinValue;

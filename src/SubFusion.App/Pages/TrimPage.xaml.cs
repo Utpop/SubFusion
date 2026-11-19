@@ -29,7 +29,17 @@ public sealed partial class TrimPage : Page
 
         Timeline.RangeChanged += OnRangeChanged;
         Timeline.RangeCommitted += OnRangeCommitted;
+        // ViewModel 是单例而页面会被重建：订阅必须在 Loaded 里做、Unloaded 里退订。
+        // 只在构造里订阅、只在 Unloaded 退订的话，第二次进入本页就再也不会同步区间，
+        // 拖动条会永远停在旧位置。
+        Loaded += OnSubscribe;
+    }
+
+    private void OnSubscribe(object sender, RoutedEventArgs e)
+    {
+        ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
+        SyncTimelineFromViewModel();
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e) => SyncTimelineFromViewModel();

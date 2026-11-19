@@ -47,7 +47,13 @@ public static class FileMover
         }
 
         await CopyWithProgressAsync(source, destination, onProgress, cancellationToken).ConfigureAwait(false);
-        try { File.Delete(source); } catch { /* 源文件删不掉不影响输出可用 */ }
+        try { File.Delete(source); }
+        catch (Exception ex)
+        {
+            // 删不掉源文件不影响输出可用，但「以为已移动、实际源还在」必须让调用方知道，
+            // 否则用户会在两个位置各看到一份几十 GB 的文件而毫无提示。
+            throw new IOException("输出已就位，但源文件删除失败（数据未丢失）：" + ex.Message, ex);
+        }
     }
 
     /// <summary>
@@ -86,11 +92,13 @@ public static class FileMover
                     if (ratio - lastReport >= 0.01)
                     {
                         lastReport = ratio;
-                        onProgress?.Invoke(ratio);
+                        // 进度回调可能来自已关闭窗口的 Dispatcher；它抛异常绝不能落入下面的
+                        // catch，否则一份已经复制完整的输出会被当成半成品删掉。
+                        try { onProgress?.Invoke(ratio); } catch { /* 只影响进度显示 */ }
                     }
                 }
             }
-            onProgress?.Invoke(1.0);
+            try { onProgress?.Invoke(1.0); } catch { /* 只影响进度显示 */ }
         }
         catch
         {

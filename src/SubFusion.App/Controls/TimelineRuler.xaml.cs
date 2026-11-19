@@ -188,13 +188,18 @@ public sealed partial class TimelineRuler : UserControl
         e.Handled = true;
     }
 
-    /// <summary>拖动起点时吸附到最近关键帧（容差内），让拖动位置与实际切点一致。</summary>
+    /// <summary>
+    /// 拖动起点时吸附到最近关键帧，让拖动位置与实际切点一致。
+    ///
+    /// 容差传 double.MaxValue = 不论多远都吸附。这不是"手感"取舍：
+    /// 引擎的 KeyframeIndex.SnapToKeyframe 本身就没有容差，永远回退到上一个关键帧。
+    /// 界面若在容差外不吸附，就会出现「标尺显示 5.3s、实际从 2.0s 开始」的所见非所得，
+    /// 而那正是这个控件存在的理由。
+    /// </summary>
     private double Snap(double seconds)
     {
         if (!SnapEnabled || _keyframes.Count == 0) return seconds;
-        // 无损切割的起点只能落在关键帧上，引擎只向前吸附；UI 必须用同一规则，
-        // 否则拖到关键帧之后时显示位置与真实切点不一致（所见非所得）。
-        return TimelineGeometry.SnapToPreviousKeyframe(_keyframes, seconds, SnapTolerance);
+        return TimelineGeometry.SnapToPreviousKeyframe(_keyframes, seconds, double.MaxValue);
     }
 
     /// <summary>指针形状反馈：可拖的地方给手型光标。</summary>

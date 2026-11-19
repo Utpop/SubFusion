@@ -24,6 +24,8 @@
             <converters:LossyToBrushConverter x:Key="LossyToBrush" />
             <converters:BytesToImageConverter x:Key="BytesToImage" />
             <converters:ResultOkToSeverityConverter x:Key="ResultOkToSeverity" />
+            <!-- 把 copy / libx264 这类技术值翻译成大白话，只影响显示，不改变实际设置值 -->
+            <converters:TechLabelConverter x:Key="TechLabel" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

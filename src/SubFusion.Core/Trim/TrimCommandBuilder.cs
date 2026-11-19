@@ -18,13 +18,13 @@ public static class TrimCommandBuilder
     /// <param name="rotation">旋转结论。</param>
     /// <param name="ffmpeg">ffmpeg 可执行文件路径。</param>
     public static List<string> Build(VideoTrimOptions options, MediaBundle bundle,
-                                     double actualStart, RotationPlan rotation, string ffmpeg = "ffmpeg")
+                                     double actualStart, RotationPlan rotation, string ffmpeg = "ffmpeg",
+                                     string? renderPath = null)
     {
         // 终点必须与引擎一致收敛到文件实际时长；否则 -t 与进度分母(actualDuration)不符，
         // 进度会冲过 100% 或提前结束，诊断时长也与实际命令矛盾。
-        double requestedEnd = bundle.Duration > 0
-            ? Math.Min(options.EndSeconds, bundle.Duration)
-            : options.EndSeconds;
+        // 收敛规则统一走 VideoTrimOptions.NormalizeRange——三处各算一次迟早会分叉。
+        double requestedEnd = options.NormalizeRange(bundle.Duration).End;
         double duration = Math.Max(0.05, requestedEnd - actualStart);
         bool copying = options.CopiesStreams;
         bool toMp4 = options.NormalizedContainer() == "mp4";
@@ -47,7 +47,11 @@ public static class TrimCommandBuilder
         // 流选择：视频必选；音频与字幕按源文件实际存在的轨道映射，用 ? 保证缺失时不失败。
         cmd.AddRange(new[] { "-map", "0:v:0" });
         if (bundle.HasAudio) cmd.AddRange(new[] { "-map", "0:a:0" });
-        if (options.KeepSubtitles) cmd.AddRange(new[] { "-map", "0:s?" });
+        // mp4 装不下 PGS/VobSub 这类图形字幕：-map 之后 ffmpeg 会以非 0 退出，
+        // 用户看到的只是「切割失败」。这里提前拦下并说清楚原因，
+        // 由引擎在 Validate 阶段之外给出可读提示（见 VideoTrimEngine 的字幕容器检查）。
+        if (options.KeepSubtitles && !(toMp4 && HasBitmapSubtitles(bundle)))
+            cmd.AddRange(new[] { "-map", "0:s?" });
 
         if (copying)
         {
@@ -84,9 +88,17 @@ public static class TrimCommandBuilder
         if (toMp4) cmd.AddRange(new[] { "-movflags", "+faststart", "-f", "mp4" });
         else cmd.AddRange(new[] { "-f", "matroska" });
 
-        cmd.Add(options.OutputPath);
+        // 默认落到 options.OutputPath（自检与「只看命令形状」的调用方要的就是它）；
+        // 引擎执行时传入本任务专属的渲染临时文件，校验通过后才改名到最终路径。
+        cmd.Add(string.IsNullOrEmpty(renderPath) ? options.OutputPath : renderPath!);
         return cmd;
     }
+
+    /// <summary>
+    /// 源文件是否带图形字幕（PGS / VobSub）。mp4 容器无法承载，只能转成 mov_text
+    /// 或干脆不复制；直接 -map 会让整条命令以非 0 退出。
+    /// </summary>
+    public static bool HasBitmapSubtitles(MediaBundle bundle) => bundle.BitmapSubtitleCount > 0;
 
     /// <summary>
     /// 顺时针旋转 → transpose 滤镜参数。

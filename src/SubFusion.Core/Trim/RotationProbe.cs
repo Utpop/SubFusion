@@ -18,8 +18,20 @@ public static class RotationProbe
     public static async Task<int> ReadAsync(string ffprobe, string path,
                                             CancellationToken cancellationToken = default,
                                             int timeoutSeconds = 30)
+        => await TryReadAsync(ffprobe, path, cancellationToken, timeoutSeconds).ConfigureAwait(false) ?? 0;
+
+    /// <summary>
+    /// 同 <see cref="ReadAsync"/>，但「读不出来」返回 null。
+    ///
+    /// 二者必须分开：0° 是「确实没有显示方向」，null 是「没能问出来」。
+    /// 混为一谈时，竖屏素材在 ffprobe 超时后会被安静地当成正常横屏素材，
+    /// 界面还会明确告诉用户「源文件没有方向」——用户裁完才发现画面躺倒。
+    /// </summary>
+    public static async Task<int?> TryReadAsync(string ffprobe, string path,
+                                                CancellationToken cancellationToken = default,
+                                                int timeoutSeconds = 30)
     {
-        if (string.IsNullOrEmpty(ffprobe) || !File.Exists(path)) return 0;
+        if (string.IsNullOrEmpty(ffprobe) || !File.Exists(path)) return null;
 
         string[] args =
         {
@@ -37,16 +49,16 @@ public static class RotationProbe
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { throw; }
-        catch { return 0; }
+        catch { return null; }
 
-        if (proc.TimedOut || proc.ExitCode != 0 || string.IsNullOrWhiteSpace(proc.Stdout)) return 0;
+        if (proc.TimedOut || proc.ExitCode != 0 || string.IsNullOrWhiteSpace(proc.Stdout)) return null;
 
         try
         {
             using JsonDocument doc = JsonDocument.Parse(proc.Stdout);
             if (!doc.RootElement.TryGetProperty("streams", out JsonElement streams) ||
                 streams.ValueKind != JsonValueKind.Array)
-                return 0;
+                return null;
 
             foreach (JsonElement stream in streams.EnumerateArray())
             {
@@ -68,7 +80,8 @@ public static class RotationProbe
                 }
             }
         }
-        catch { /* 解析失败按无旋转处理：宁可输出横躺，也不要因为读不到元数据就中断任务 */ }
+        catch { /* 解析失败按「未能读取」处理，不从错误数据里推断方向 */ }
+        // 能读到流与 side_data，只是没有显示矩阵 = 确实是 0°。
         return 0;
     }
 }

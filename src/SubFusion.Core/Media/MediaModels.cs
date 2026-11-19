@@ -116,6 +116,12 @@ public sealed class MediaBundle
     public List<VideoStreamInfo> Videos { get; } = new();
     public List<AudioStreamInfo> Audios { get; } = new();
     public int SubtitleStreamCount { get; set; }
+
+    /// <summary>
+    /// 图形字幕（PGS / VobSub）的轨数。mp4 容器无法承载这类码流，
+    /// 裁剪/合并前据此提前给出可读提示，而不是等 ffmpeg 报难懂的错。
+    /// </summary>
+    public int BitmapSubtitleCount { get; set; }
     public ContainerInfo Container { get; set; } = new();
 
     public VideoStreamInfo? PrimaryVideo => Videos.Count > 0 ? Videos[0] : null;

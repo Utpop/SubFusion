@@ -7,7 +7,18 @@ public sealed class OutputPlan
     public string Container { get; set; } = "mkv";
     public int ExpectedVideo { get; set; } = 1;
     public int ExpectedAudio { get; set; }
+    /// <summary>期望的字幕轨数量（Python v1.1 语义，冻结基准逐项比对）。</summary>
     public int ExpectedSubs { get; set; }
+
+    /// <summary>
+    /// true 表示字幕轨来自「-map 0:s? 原样复制源字幕」（硬字幕但没有可烧录的轨）。
+    /// 此时 <see cref="ExpectedSubs"/> 仍是 0（「没有新字幕轨」），但输出的实际字幕数
+    /// 等于源文件的字幕数，校验必须换一个口径，否则必然误报「字幕轨数量不符」。
+    /// </summary>
+    public bool SubsFromSource { get; set; }
+
+    /// <summary>源字幕数量是否可信（ffprobe 探测成功）。false 时无法核对数量。</summary>
+    public bool SubsSourceKnown { get; set; } = true;
     public int BurnedSubs { get; set; }
     public string Vcodec { get; set; } = "copy";
     public string Acodec { get; set; } = "copy";

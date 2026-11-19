@@ -129,6 +129,13 @@ public sealed class VideoMergeEngine
                     InputHealth h = health[i];
                     if (!h.Truncated) continue;
                     cancellationToken.ThrowIfCancellationRequested();
+                    // 收尾的前提是「真的算出了可保留长度」。可读终点未知或余量吃光时
+                    // KeepSeconds 为 0，收尾会产出一个 0 秒片段并把整次合并拖垮，
+                    // 这里必须先拦住，并明确说明是「无法确定」而不是「文件坏了」。
+                    if (!h.ReadableKnown || h.KeepSeconds <= 0)
+                        return Fail(taskId, MergeStage.Probing,
+                            "无法确定该文件的可读范围，已停止合并以免破坏素材：" + h.Describe(),
+                            diagnostics, startedAt);
                     string salvaged = Path.Combine(tempDir,
                         "salvaged_" + i.ToString("D3", CultureInfo.InvariantCulture) +
                         InputIntegrity.SalvagedExtension(bundles[i]));

@@ -161,8 +161,10 @@ internal static class ClassicDialogs
                 Marshal.WriteInt16(fileBuffer, i * 2, 0);
             if (!string.IsNullOrEmpty(initialFile))
             {
+                // 必须留出末尾的 NUL：写满 bufferChars 会把上面预置的终止符覆盖掉，
+                // comdlg32 随后会读到缓冲区之外（未初始化内存），表现为乱码文件名甚至崩溃。
                 char[] initial = initialFile.ToCharArray();
-                Marshal.Copy(initial, 0, fileBuffer, Math.Min(initial.Length, bufferChars));
+                Marshal.Copy(initial, 0, fileBuffer, Math.Min(initial.Length, bufferChars - 1));
             }
 
             var ofn = new OpenFileName

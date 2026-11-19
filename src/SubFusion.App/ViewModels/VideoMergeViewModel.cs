@@ -660,6 +660,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
                         CountText = group.Items.Count + " 个 · 合计 " + group.TotalDurationText,
                     };
                     foreach (MediaBundle b in group.Items) vm.Files.Add(Path.GetFileName(b.Path));
+                    vm.NotifyFilesChanged();
                     Groups.Add(vm);
                 }
 
@@ -1560,7 +1561,16 @@ public sealed partial class VideoMergeViewModel : ObservableObject
             _tasks.Finish(_record, TaskState.Cancelled, "已取消");
         }
         try { _runSource?.Cancel(); } catch (ObjectDisposedException) { /* 刚好收尾 */ }
+        // 取消是协作式的：Core 要等 ffmpeg 退出才返回，这期间它仍会回推进度。
+        // 不在这里关掉进度通道，界面就会继续往前跑，甚至把 StageText 写回「合并中…」，
+        // 用户看到的是「点了取消却还在动」。这里定格在当前进度上。
+        _progressClosed = true;
+        _pendingProgress = null;
+        IsIndeterminate = false;
         StageText = "正在取消…";
+        ProgressDetail = "正在等待当前步骤安全退出…";
+        SpeedText = "";
+        EtaText = "";
         CanCancel = false;
     }
 

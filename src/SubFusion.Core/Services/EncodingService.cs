@@ -6,7 +6,16 @@ using SubFusion.Core.Models;
 namespace SubFusion.Core.Services;
 
 public sealed record DetectedEncoding(string Encoding, bool HasBom);
-public sealed record ConvertResult(string Path, bool Created, string Encoding);
+/// <summary>
+/// UTF-8 转换结果。
+/// <paramref name="Error"/> 非空表示**转换失败**，此时 <paramref name="Path"/> 仍是原文件、
+/// 内容仍是原始编码——调用方必须把它当成「这条轨不可用」处理，绝不能当成「无需转换」。
+/// 二者混为一谈时，GBK 字幕会被 ffmpeg 按 UTF-8 解成乱码写进输出，任务却显示成功。
+/// </summary>
+public sealed record ConvertResult(string Path, bool Created, string Encoding, string Error = "")
+{
+    public bool Failed => Error.Length > 0;
+}
 public sealed record HardSubFailure(string Name, string Reason);
 public sealed record PrepareResult(List<SubTrack> Prepared, List<HardSubFailure> Failed);
 
@@ -169,6 +178,9 @@ public static class EncodingService
                 using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 var extended = new List<byte>(Math.Min((int)Math.Min(fileLength, maxExtended), 1 << 20));
                 extended.AddRange(raw);
+                // 指针本就在 0，先把已采样的前缀跳过：否则从文件头再读一遍，
+                // 前缀会被重复计入，零字节比例与打分被稀释，还白白吃掉扩样预算。
+                fs.Seek(raw.Length, SeekOrigin.Begin);
                 var chunk = new byte[64 * 1024];
                 while (extended.Count < maxExtended)
                 {
@@ -330,7 +342,7 @@ public static class EncodingService
 
         byte[] raw;
         try { raw = File.ReadAllBytes(path); }
-        catch { return new ConvertResult(path, false, encoding); }
+        catch (Exception ex) { return new ConvertResult(path, false, encoding, "读取字幕文件失败：" + ex.Message); }
 
         string text = Decode(raw, encoding);
         if (detected.HasBom) text = StripBomChar(text);
@@ -344,7 +356,7 @@ public static class EncodingService
         if (repair) text = NormalizeAssScriptInfo(text);
 
         try { Directory.CreateDirectory(tempDir); }
-        catch { return new ConvertResult(path, false, encoding); }
+        catch (Exception ex) { return new ConvertResult(path, false, encoding, "无法创建临时目录：" + ex.Message); }
 
         string name = Path.GetFileName(path);
         string stem = Path.GetFileNameWithoutExtension(name);
@@ -359,7 +371,7 @@ public static class EncodingService
             File.WriteAllText(outPath, text, new UTF8Encoding(false));
             return new ConvertResult(outPath, true, encoding);
         }
-        catch { return new ConvertResult(path, false, encoding); }
+        catch (Exception ex) { return new ConvertResult(path, false, encoding, "写入 UTF-8 字幕失败：" + ex.Message); }
     }
 
     #endregion

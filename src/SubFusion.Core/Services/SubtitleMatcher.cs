@@ -161,8 +161,14 @@ public static class SubtitleMatcher
             mapping[video] = mapping[video]
                 .OrderBy(p => p.ToLowerInvariant(), StringComparer.Ordinal)
                 .ToList();
-            foreach (string s in mapping[video]) unmatched.Remove(s);
         }
+
+        // 3.5) 一次性剔除已匹配项：逐个 List.Remove 是 O(n) 的，几百份字幕就要搬移上万次，
+        // 匹配阶段会明显卡顿。先收集到集合里再统一过滤。
+        var matchedSubs = new HashSet<string>(StringComparer.Ordinal);
+        foreach (List<string> selected in mapping.Values)
+            foreach (string s in selected) matchedSubs.Add(s);
+        if (matchedSubs.Count > 0) unmatched.RemoveAll(matchedSubs.Contains);
 
         // 4) 模糊提示：能对上某个同目录视频、但没分到（同集已有一份 / 已挂满 / 只允许一条）
         var fuzzy = new List<FuzzyMatch>();
