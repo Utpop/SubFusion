@@ -40,6 +40,9 @@ public static class ChapterWriter
     public static string Escape(string value)
     {
         if (string.IsNullOrEmpty(value)) return "";
+        // 先把 CRLF 统一成 LF：原实现直接丢弃 \r，含换行的标题会被改写，
+        // 回读后与期望不符，导致每次都误判为时间轴漂移而重写整文件。
+        value = value.Replace("\r\n", "\n").Replace('\r', '\n');
         var sb = new StringBuilder(value.Length + 8);
         foreach (char ch in value)
         {

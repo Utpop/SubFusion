@@ -206,34 +206,47 @@
                                  Title="{x:Bind ViewModel.ReasonTitle, Mode=OneWay}"
                                  Message="{x:Bind ViewModel.ReasonIntro, Mode=OneWay}" />
                         <!-- 差异按"要不要重编码"分组：一长串并列差异看不出重点，
-                             真正决定画质有没有损失的是其中有没有"必须重新编码"那一组。 -->
-                        <ItemsControl ItemsSource="{x:Bind ViewModel.ReasonGroups}"
+                             真正决定画质有没有损失的是其中有没有"必须重新编码"那一组。
+
+                             这里必须有高度上限 + 内部滚动：差异条数与输入文件数成正比，
+                             三十几个文件能列出三十几项，每项还带完整文件名。
+                             不限高的话这张卡片会把整个右栏撑成几千像素，
+                             下面的「可无损拼接的组合」「输出」「开始合并」全被挤出屏幕，
+                             用户反而找不到该点哪里。 -->
+                        <ScrollViewer MaxHeight="320"
+                                      VerticalScrollBarVisibility="Auto"
+                                      VerticalScrollMode="Auto"
+                                      HorizontalScrollMode="Disabled"
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      Padding="0,0,8,0"
                                       Visibility="{x:Bind ViewModel.HasReasons, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="vm:MergeReasonGroupViewModel">
-                                    <StackPanel Spacing="2" Margin="0,4,0,0">
-                                        <StackPanel Orientation="Horizontal" Spacing="8">
-                                            <!-- 会重编码的那一组用警示色，其余保持普通色：
-                                                 颜色本身就在回答"画质会不会变差"。 -->
-                                            <TextBlock Text="{x:Bind Title}" FontWeight="SemiBold" FontSize="12"
-                                                       Foreground="{x:Bind IsLossy, Converter={StaticResource LossyToBrush}}" />
-                                            <TextBlock Text="{x:Bind CountText}" Style="{StaticResource CaptionStyle}"
-                                                       VerticalAlignment="Center" />
+                            <ItemsControl ItemsSource="{x:Bind ViewModel.ReasonGroups}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:MergeReasonGroupViewModel">
+                                        <StackPanel Spacing="2" Margin="0,4,0,0">
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <!-- 会重编码的那一组用警示色，其余保持普通色：
+                                                     颜色本身就在回答"画质会不会变差"。 -->
+                                                <TextBlock Text="{x:Bind Title}" FontWeight="SemiBold" FontSize="12"
+                                                           Foreground="{x:Bind IsLossy, Converter={StaticResource LossyToBrush}}" />
+                                                <TextBlock Text="{x:Bind CountText}" Style="{StaticResource CaptionStyle}"
+                                                           VerticalAlignment="Center" />
+                                            </StackPanel>
+                                            <TextBlock Text="{x:Bind Intro}" Style="{StaticResource CaptionStyle}"
+                                                       TextWrapping="Wrap" />
+                                            <ItemsControl ItemsSource="{x:Bind Details}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate x:DataType="x:String">
+                                                        <TextBlock Text="{x:Bind}" Style="{StaticResource CaptionStyle}"
+                                                                   Margin="12,1,0,0" TextWrapping="Wrap" />
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
                                         </StackPanel>
-                                        <TextBlock Text="{x:Bind Intro}" Style="{StaticResource CaptionStyle}"
-                                                   TextWrapping="Wrap" />
-                                        <ItemsControl ItemsSource="{x:Bind Details}">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate x:DataType="x:String">
-                                                    <TextBlock Text="{x:Bind}" Style="{StaticResource CaptionStyle}"
-                                                               Margin="12,1,0,0" TextWrapping="Wrap" />
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                    </StackPanel>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
 
                         <InfoBar Severity="Error" IsClosable="False"
                                  IsOpen="{x:Bind ViewModel.AnalysisError, Mode=OneWay, Converter={StaticResource NotEmptyToBool}}"
@@ -252,6 +265,19 @@
                         </StackPanel>
                         <TextBlock Text="{x:Bind ViewModel.GroupSummary, Mode=OneWay}"
                                    Style="{StaticResource CaptionStyle}" TextWrapping="Wrap" />
+                        <!-- 把组合分配到各自文件夹：这是移动，原位置不再保留 -->
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button Content="移动到文件夹…" FontSize="12" Padding="12,4"
+                                    Command="{x:Bind ViewModel.ExportGroupFoldersCommand}"
+                                    ToolTipService.ToolTip="把每个可无损拼接的组合移动到独立文件夹里，方便逐个检查。这是移动：原位置不再保留这些文件。" />
+                            <ProgressBar Value="{x:Bind ViewModel.ExportProgress, Mode=OneWay}" Maximum="100"
+                                         Width="140" VerticalAlignment="Center"
+                                         Visibility="{x:Bind ViewModel.ExportingGroups, Mode=OneWay, Converter={StaticResource BoolToVisible}}" />
+                            <TextBlock Text="{x:Bind ViewModel.ExportDetail, Mode=OneWay}"
+                                       Style="{StaticResource CaptionStyle}" VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"
+                                       Visibility="{x:Bind ViewModel.ExportingGroups, Mode=OneWay, Converter={StaticResource BoolToVisible}}" />
+                        </StackPanel>
                         <ItemsControl ItemsSource="{x:Bind ViewModel.Groups}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate x:DataType="vm:MergeGroupViewModel">
@@ -273,7 +299,7 @@
                                         <!-- 只在需要额外一步重封装时才出现，说明"为什么不能直接拼" -->
                                         <TextBlock Text="{x:Bind ReasonText}" Style="{StaticResource CaptionStyle}"
                                                    TextWrapping="Wrap"
-                                                   Visibility="{x:Bind ReasonText, Converter={StaticResource NotEmptyToBool}, Mode=OneWay}" />
+                                                   Visibility="{x:Bind ReasonText, Converter={StaticResource NotEmptyToVisible}, Mode=OneWay}" />
                                         <TextBlock Text="{x:Bind FileListText}" Style="{StaticResource CaptionStyle}"
                                                    TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                     </StackPanel>
@@ -379,11 +405,11 @@
                         <TextBlock Text="完成后处理" Style="{StaticResource SectionTitleStyle}" />
                         <CheckBox Content="校验输出后删除源文件"
                                   IsChecked="{x:Bind ViewModel.DeleteSource, Mode=TwoWay}"
-                                  ToolTipService.ToolTip="合并成功且输出通过全片解码校验后，删除参与合并的原始视频。不可撤销。" />
+                                  ToolTipService.ToolTip="合并成功且输出通过校验后，删除参与合并的原始视频。不可撤销。" />
                         <InfoBar Severity="Warning" IsClosable="False"
                                  IsOpen="{x:Bind ViewModel.DeleteSource, Mode=OneWay}"
-                                 Title="删除前会先证明输出完好"
-                                 Message="合并完成后对整个输出做一次全片解码校验（不只是开头和结尾）。只有整段都能完整解码才会删除源文件；校验不通过时源文件一律保留。此操作不可撤销。" />
+                                 Title="删除前会先核实输出完好"
+                                 Message="删除前会做两项核实：输出字节数与刚通过校验的产物完全一致（排除搬运写坏），以及沿整条时间轴均匀抽样解码（配合已有的接缝、头尾、内容终点检查）。全部通过才会删除源文件；任何一项存疑都保留源文件。此操作不可撤销。" />
                     </StackPanel>
                 </Border>
 
@@ -404,6 +430,12 @@
                                   ToolTipService.ToolTip="大多数片段参数一致时，只重编码不合群的那几个，其余保持原样（不重新编码）。默认开启。" />
                         <TextBlock Style="{StaticResource CaptionStyle}"
                                    Text="开启后：能找到「多数派」时只重编码少数片段，保留片段画质逐比特不变。重编码后会重新核对这些片段确实能拼接；核对不通过会自动退回全量重编码。" />
+
+                        <CheckBox Content="输入被截断时保留可读部分继续合并"
+                                  IsChecked="{x:Bind ViewModel.SalvageTruncatedInputs, Mode=TwoWay}"
+                                  ToolTipService.ToolTip="下载中断或录制崩溃的文件，容器头仍写着完整时长，数据却在中途就断了。开启后会自动只保留读得出来的部分，并在结果里说明少了多少秒。" />
+                        <TextBlock Style="{StaticResource CaptionStyle}"
+                                   Text="关闭时：发现输入被截断会立刻失败，并指出是哪个文件、缺多少秒。开启时：把能读到的部分合并进去，输出仍然完整可解码。" />
 
                         <CheckBox Content="无损拼接失败时自动改用重新编码重试"
                                   IsChecked="{x:Bind ViewModel.AutoFallbackOnFailure, Mode=TwoWay}"

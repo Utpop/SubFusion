@@ -64,7 +64,9 @@
                 </CommandBar>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                    <ComboBox x:Name="FilterBox" ItemsSource="{x:Bind ViewModel.Filters}" SelectedIndex="0"
+                    <!-- 绑定带中文标签的选项对象：直接绑枚举会显示 All / Running 等英文名 -->
+                    <ComboBox x:Name="FilterBox" ItemsSource="{x:Bind ViewModel.FilterOptions}"
+                              DisplayMemberPath="Label" SelectedIndex="0"
                               SelectionChanged="FilterBox_SelectionChanged" MinWidth="120" />
                 </StackPanel>
             </Grid>

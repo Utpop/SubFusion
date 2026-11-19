@@ -66,14 +66,6 @@
         <Setter Property="Padding" Value="12" />
     </Style>
 
-    <!-- 状态徽标 -->
-    <Style x:Key="StatusPillStyle" TargetType="Border">
-        <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="Padding" Value="6,2" />
-        <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="VerticalAlignment" Value="Center" />
-    </Style>
-
     <!-- 工具条按钮：比默认按钮更紧凑，用于列表/工具条区域 -->
     <Style x:Key="ToolbarButtonStyle" TargetType="Button">
         <Setter Property="Padding" Value="12,6" />
@@ -86,17 +78,6 @@
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Padding" Value="0" />
         <Setter Property="MinHeight" Value="{StaticResource ListItemHeight}" />
-    </Style>
-
-    <!-- 表单行内输入控件的统一高度 -->
-    <Style x:Key="FieldComboBoxStyle" TargetType="ComboBox">
-        <Setter Property="MinWidth" Value="140" />
-        <Setter Property="HorizontalAlignment" Value="Stretch" />
-    </Style>
-
-    <Style x:Key="FieldNumberBoxStyle" TargetType="NumberBox">
-        <Setter Property="MinWidth" Value="140" />
-        <Setter Property="SpinButtonPlacementMode" Value="Compact" />
     </Style>
 
     <!-- 空状态：居中标题 + 说明 + 一个主操作 -->

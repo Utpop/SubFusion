@@ -15,18 +15,12 @@ public static class Constants
     /// <summary>并发探测媒体信息的线程数（原 PROBE_WORKERS）。</summary>
     public const int ProbeWorkers = 4;
 
-    /// <summary>Windows CREATE_NO_WINDOW；.NET 用 ProcessStartInfo.CreateNoWindow = true 等价实现。</summary>
-    public const int CreateNoWindow = 0x08000000;
-
     /// <summary>
     /// 文件名自动匹配的默认阈值（0~1）。
     /// 1.1 起打分改为「标题相似度 0.85 + 令牌重合 0.15」加权，0.72 对应的基本是
     /// 「除语言/格式标记外文件名完全一致」，与旧版「规范化后完全相等」同一语义。
     /// </summary>
     public const double DefaultThreshold = 0.72;
-
-    /// <summary>分数落在 [阈值, 阈值 + 本值) 视为「模糊匹配」，不挂载，只提示用户确认。</summary>
-    public const double FuzzyBandWidth = 0.10;
 
     /// <summary>配置文件路径：%USERPROFILE%\.subfusion.json（原 os.path.expanduser("~")）。</summary>
     public static string ConfigPath =>
@@ -251,9 +245,6 @@ public static class Constants
     public static readonly Regex KanaRegex = new(@"[\u3040-\u30ff]", RegexOptions.Compiled);
     public static readonly Regex HangulRegex = new(@"[\uac00-\ud7af]", RegexOptions.Compiled);
     public static readonly Regex HanRegex = new(@"[\u4e00-\u9fff]", RegexOptions.Compiled);
-
-    /// <summary>CJK_RE（原版中定义但未使用，保留以备兼容）。</summary>
-    public static readonly Regex CjkRegex = new(@"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", RegexOptions.Compiled);
 
     public const string LogSeparator = "============================================================"; // 60 个 '='
 }

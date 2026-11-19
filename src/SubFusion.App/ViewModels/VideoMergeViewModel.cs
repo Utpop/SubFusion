@@ -137,6 +137,16 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     private DateTime _lastProgressFlush = DateTime.MinValue;
     private MergeProgress? _pendingProgress;
     private bool _progressScheduled;
+    /// <summary>
+    /// 任务已结束、进度区已定稿。此后到达的任何进度回调都必须丢弃。
+    ///
+    /// 这不是防御性写法，而是修一个实测到的界面故障：
+    /// 引擎最后报的一条（「输出已就位… 99.9%」）可能还在 DispatcherQueue 里排队，
+    /// 而 ShowResult 已经先把界面定稿成「已完成 / 100%」。
+    /// 两条回调的先后一颠倒，排队中的旧快照就会把定稿覆盖回去——
+    /// 于是文件明明已经写好，界面却停在 99.9% 那句话上。
+    /// </summary>
+    private bool _progressClosed;
 
     private bool _loading;
 
@@ -215,6 +225,15 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     /// 自动重编码只会把「立刻报错」变成「跑很久仍失败」。
     /// </summary>
     [ObservableProperty] private bool autoFallbackOnFailure;
+
+    /// <summary>
+    /// 输入尾部被截断时，保留每个文件真正读得出来的部分继续合并。默认开启。
+    ///
+    /// 下载中断/录制崩溃留下的文件，容器头仍声明完整时长，数据却在中途断了。
+    /// 直接拼接的结果是「时长不符 + 结尾无法解码」，报错指向输出、看着像合并做坏了。
+    /// 开启后按可读部分收尾，并在结果里说明每个文件少了多少秒。
+    /// </summary>
+    [ObservableProperty] private bool salvageTruncatedInputs = true;
 
     [ObservableProperty] private string outputPath = "";
     [ObservableProperty] private string outputDirectory = "";
@@ -398,13 +417,19 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         try { previous.Cancel(); } catch (ObjectDisposedException) { /* 已释放 */ }
     }
 
+    /// <summary>
+    /// 把探测结果写回对应的输入行。
+    /// 必须按路径匹配，不能按下标：<see cref="VideoMergeTask.ProbeAsync"/> 是并发探测，
+    /// 返回顺序不保证与输入顺序一致，按下标会在顺序变化时把整批媒体信息贴错行。
+    /// </summary>
     private void ApplyBundleInfo(List<MediaBundle> bundles)
     {
-        for (int i = 0; i < Inputs.Count && i < bundles.Count; i++)
-        {
-            if (!string.Equals(Inputs[i].Path, bundles[i].Path, StringComparison.OrdinalIgnoreCase)) continue;
-            Inputs[i].Apply(bundles[i]);
-        }
+        var byPath = new Dictionary<string, MediaBundle>(StringComparer.OrdinalIgnoreCase);
+        foreach (MediaBundle bundle in bundles)
+            if (!string.IsNullOrEmpty(bundle.Path)) byPath[bundle.Path] = bundle;
+
+        foreach (MergeInputViewModel input in Inputs)
+            if (byPath.TryGetValue(input.Path, out MediaBundle? bundle)) input.Apply(bundle);
     }
 
     private async Task<VideoMergeTask?> EnsureTaskAsync(CancellationToken cancellationToken)
@@ -449,6 +474,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         DeleteSource = _settings.MergeDeleteSource && VerifyOutput;
         PartialReencode = _settings.MergePartialReencode;
         AutoFallbackOnFailure = _settings.MergeAutoFallback;
+        SalvageTruncatedInputs = _settings.MergeSalvage;
         _loading = false;
         OnPropertyChanged(nameof(ChaptersAvailable));
         OnPropertyChanged(nameof(ChaptersEnabled));
@@ -470,6 +496,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         _settings.MergeDeleteSource = DeleteSource;
         _settings.MergePartialReencode = PartialReencode;
         _settings.MergeAutoFallback = AutoFallbackOnFailure;
+        _settings.MergeSalvage = SalvageTruncatedInputs;
         if (OutputDirectory.Length > 0) _settings.MergeOutputDir = OutputDirectory;
     }
 
@@ -582,6 +609,14 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     [ObservableProperty] private string groupSummary = "";
     [ObservableProperty] private bool hasGroups;
 
+    /// <summary>最近一次分组结果。导出文件夹时要用它的原始顺序与组合，而不是界面投影。</summary>
+    private MergeGroupingResult? _lastGrouping;
+
+    /// <summary>导出进行中的状态与进度。</summary>
+    [ObservableProperty] private bool exportingGroups;
+    [ObservableProperty] private double exportProgress;
+    [ObservableProperty] private string exportDetail = "";
+
     /// <summary>「可无损拼接的组合」结果，供界面直接渲染。</summary>
     public ObservableCollection<MergeGroupViewModel> Groups { get; } = new();
 
@@ -608,6 +643,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
 
             List<MediaBundle> bundles = await task.ProbeAsync(Inputs.Select(i => i.Path).ToList());
             MergeGroupingResult result = MergeGrouping.Analyze(bundles);
+            _lastGrouping = result;
 
             _ui.RunOnUiThread(() =>
             {
@@ -659,6 +695,146 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         return text;
     }
 
+    /// <summary>
+    /// 把识别出来的无损组合各分配到一个独立文件夹，方便逐个检查。
+    ///
+    /// 设计上的三条约束：
+    /// <list type="number">
+    /// <item>只<b>复制</b>，绝不移动或删除源文件——这是检查用的副本，原库必须保持原样；</item>
+    /// <item>先出计划再动手：文件夹名、总大小、空间是否够，全部在开始复制之前算清楚并显示；</item>
+    /// <item>目标位置已有同名目录时自动改名，绝不复用别人的文件夹。</item>
+    /// </list>
+    /// </summary>
+    [RelayCommand]
+    private async Task ExportGroupFoldersAsync()
+    {
+        if (IsRunning || Grouping || ExportingGroups) return;
+        if (_lastGrouping is null || Groups.Count == 0)
+        {
+            await _ui.ShowInfoAsync("请先点「识别无损组合」，有结果后才能分配文件夹。");
+            return;
+        }
+
+        // 分组结果必须与当前输入列表一致。
+        // 用户改了输入却不重新识别时，导出的会是上一批文件的组合——
+        // 那等于把过期结论当成事实写进文件夹里。
+        int currentFiles = Inputs.Count;
+        if (_lastGrouping.GroupedCount > currentFiles)
+        {
+            await _ui.ShowInfoAsync("输入列表已经变化，请重新点「识别无损组合」再导出。");
+            return;
+        }
+
+        string? target = await _ui.PickFolderAsync("选择导出位置（每个组合会在里面建一个文件夹）");
+        if (string.IsNullOrEmpty(target)) return;
+
+        GroupFolderPlan plan;
+        try
+        {
+            plan = GroupFolderPlanner.Build(_lastGrouping, target);
+        }
+        catch (Exception ex)
+        {
+            await _ui.ShowErrorAsync("无法生成导出计划：" + ex.Message);
+            return;
+        }
+
+        if (plan.Folders.Count == 0)
+        {
+            await _ui.ShowInfoAsync("没有可导出的组合。");
+            return;
+        }
+        if (!string.IsNullOrEmpty(plan.SpaceProblem))
+        {
+            await _ui.ShowErrorAsync(plan.SpaceProblem);
+            return;
+        }
+
+        // 动手之前把「要做什么、代价是什么、能不能撤回」一次说清。
+        // 移动是不可逆操作，这里多写一句代价说明，比事后解释有用。
+        string confirm =
+            $"将把 {plan.Folders.Count} 个组合移动到各自的文件夹：" +
+            $"{plan.FileCount} 个文件，合计 {plan.TotalSizeText}。\n\n" +
+            $"位置：{plan.TargetRoot}\n\n" +
+            (plan.HasCrossVolumeMove
+                ? $"其中有 {FileSizeText(plan.CrossVolumeBytes)} 需要跨磁盘复制搬运（会慢一些，" +
+                  "复制并核对完成后才会删除原文件；中途失败原文件不受影响）。\n\n"
+                : "目标位置与素材在同一磁盘，移动只是改名，瞬时完成。\n\n") +
+            "注意：这是移动，不是复制——原位置将不再保留这些文件。继续吗？";
+        if (!await _ui.AskYesNoAsync(confirm)) return;
+
+        ExportingGroups = true;
+        ExportProgress = 0;
+        ExportDetail = "准备复制…";
+        try
+        {
+            var progress = new Progress<GroupFolderProgress>(p => _ui.RunOnUiThread(() =>
+            {
+                ExportProgress = Math.Clamp(p.Percent, 0, 100);
+                ExportDetail = string.Format(CultureInfo.InvariantCulture,
+                    "组合 {0}/{1}：{2}", Math.Min(p.FolderIndex + 1, p.FolderCount), p.FolderCount,
+                    string.IsNullOrEmpty(p.FileName) ? p.FolderName : p.FileName);
+            }));
+
+            GroupFolderResult result = await GroupFolderExporter.ExecuteAsync(plan, progress);
+            if (!result.Ok)
+            {
+                await _ui.ShowErrorAsync(result.Error);
+                return;
+            }
+
+            // 移动后输入列表里那些路径已经失效，必须重新探测，
+            // 否则界面上会留着一串「文件不存在」的旧行。
+            await RefreshAfterMoveAsync(result);
+
+            string message = result.SummaryText;
+            if (result.Notices.Count > 0)
+                message += "\n\n需要注意：\n· " + string.Join("\n· ", result.Notices.Take(10));
+            await _ui.ShowInfoAsync(message);
+            try { _ui.OpenFolder(result.TargetRoot); } catch { /* 打不开文件夹不算失败 */ }
+        }
+        catch (Exception ex)
+        {
+            await _ui.ShowErrorAsync("导出失败：" + ex.Message);
+        }
+        finally
+        {
+            ExportingGroups = false;
+            ExportProgress = 0;
+            ExportDetail = "";
+        }
+    }
+
+    /// <summary>
+    /// 移动完成后同步界面状态。
+    ///
+    /// 从输入列表里移除已经搬走的文件，并让分组结果失效——
+    /// 分组是按旧路径算出来的，路径变了就不该再被当作有效结论使用。
+    /// 这一步不做的话，界面会留着一串指向不存在文件的行。
+    /// </summary>
+    private async Task RefreshAfterMoveAsync(GroupFolderResult result)
+    {
+        var moved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (_lastGrouping is not null)
+            foreach (MergeGroup group in _lastGrouping.Groups)
+                foreach (MediaBundle bundle in group.Items)
+                    moved.Add(bundle.Path);
+
+        _lastGrouping = null;
+        Groups.Clear();
+        HasGroups = false;
+        GroupSummary = result.SummaryText;
+
+        for (int i = Inputs.Count - 1; i >= 0; i--)
+            if (!File.Exists(Inputs[i].Path)) Inputs.RemoveAt(i);
+
+        _selected.Clear();
+        await RefreshAnalysisAsync();
+    }
+
+    /// <summary>把字节数写成可读文本。</summary>
+    private static string FileSizeText(long bytes) => Formatting.FormatSize(bytes);
+
     /// <summary>把某一组设为当前合并内容：只保留该组文件，顺序按组内顺序。</summary>
     [RelayCommand]
     private void UseGroup(MergeGroupViewModel? group)
@@ -694,9 +870,14 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         try
         {
             List<MediaBundle> bundles = await task.ProbeAsync(items.Select(i => i.Path).ToList());
+            var byPath = new Dictionary<string, MediaBundle>(StringComparer.OrdinalIgnoreCase);
+            foreach (MediaBundle bundle in bundles)
+                if (!string.IsNullOrEmpty(bundle.Path)) byPath[bundle.Path] = bundle;
             _ui.RunOnUiThread(() =>
             {
-                for (int i = 0; i < items.Count && i < bundles.Count; i++) items[i].Apply(bundles[i]);
+                foreach (MergeInputViewModel item in items)
+                    if (byPath.TryGetValue(item.Path, out MediaBundle? bundle)) item.Apply(bundle);
+                    else item.Fail("探测未返回该文件的信息");
             });
         }
         catch (Exception ex)
@@ -865,15 +1046,6 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     private bool CanMoveDown() => HasSelection() && _selected.Count > 0 &&
                                   Inputs.IndexOf(_selected[0]) is var i && i >= 0 && i < Inputs.Count - 1;
 
-    /// <summary>供视图拖放排序使用（不经过按钮）。</summary>
-    public void MoveInput(int from, int to)
-    {
-        if (IsRunning) return;
-        if (from < 0 || to < 0 || from >= Inputs.Count || to >= Inputs.Count || from == to) return;
-        Inputs.Move(from, to);
-        _ = RefreshAnalysisAsync();
-    }
-
     #endregion
 
     #region 输出路径
@@ -1000,6 +1172,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
             VerifyOutput = VerifyOutput,
             PartialReencode = PartialReencode,
             AutoFallbackOnFailure = AutoFallbackOnFailure,
+            SalvageTruncatedInputs = SalvageTruncatedInputs,
             // 删源必须先证明输出完好，因此这里强制与校验联动。
             DeleteSourceAfterVerify = DeleteSource && VerifyOutput,
         };
@@ -1031,6 +1204,10 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         }
 
         IsRunning = true;
+        _progressClosed = false;
+        _trailingScheduled = false;
+        _pendingProgress = null;
+        _progressScheduled = false;
         CanCancel = true;
         HasResult = false;
         ResultText = "";
@@ -1113,8 +1290,31 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     /// 进度回调（任意线程）。Core 每几百毫秒回调一次；这里再合并到约 10 Hz，
     /// 避免高码率任务把 UI 线程刷爆——只保留最后一次快照，由 UI 线程统一采纳。
     /// </summary>
+    /// <summary>
+    /// 安排一次延迟刷新，把「因为太快被节流挡下」的进度补发出去。
+    /// 只排一次，且不会晚于节流间隔——既保证最后一条一定能显示，
+    /// 也保证不会因为频繁排队把 UI 线程拖住。
+    /// </summary>
+    private void ScheduleTrailingFlush(TimeSpan waited)
+    {
+        if (_trailingScheduled) return;
+        _trailingScheduled = true;
+        double delayMs = Math.Max(1, ProgressPacer.MinInterval.TotalMilliseconds - waited.TotalMilliseconds);
+        _ = Task.Delay(TimeSpan.FromMilliseconds(delayMs)).ContinueWith(_ =>
+        {
+            _ui.RunOnUiThread(() =>
+            {
+                _trailingScheduled = false;
+                FlushProgress();
+            });
+        }, TaskScheduler.Default);
+    }
+
+    private bool _trailingScheduled;
+
     private void OnProgress(MergeProgress progress)
     {
+        if (_progressClosed) return;
         _pendingProgress = progress;
         if (_progressScheduled) return;
         _progressScheduled = true;
@@ -1123,13 +1323,35 @@ public sealed partial class VideoMergeViewModel : ObservableObject
 
     private void FlushProgress()
     {
+        // 任务已定稿：排队中的旧快照一律丢弃，避免把「已完成 / 100%」覆盖回 99.9%。
+        if (_progressClosed) { _pendingProgress = null; _progressScheduled = false; return; }
+
         MergeProgress? snapshot = _pendingProgress;
         _pendingProgress = null;
         _progressScheduled = false;
         if (snapshot is null) return;
 
+        // 节流不能把终态一起丢掉。
+        //
+        // 这里曾经是「不到 100ms 就 return」，而被丢掉的那一条恰好经常是最后一条
+        // （「合并完成 / 100%」）：任务其实已经成功结束、文件也已经写好，
+        // 界面却永远停在前一条「写入输出文件… 99%」上。
+        // 从用户角度这就是卡死——而且是成功之后才卡死的那种，最让人困惑。
+        // 现在终态无条件送达，普通进度照旧节流。
+        bool terminal = snapshot.Stage is MergeStage.Completed or MergeStage.Failed or MergeStage.Cancelled
+                        || ProgressPacer.IsTerminalPercent(snapshot.Percent);
         DateTime now = DateTime.UtcNow;
-        if ((now - _lastProgressFlush).TotalMilliseconds < 100) return;
+        if (!ProgressPacer.ShouldDeliver(now - _lastProgressFlush, terminal))
+        {
+            // 尾随补发：不直接丢弃，而是留到间隔过去之后再送。
+            //
+            // 早期写法是「不到 100ms 就 return」，被丢掉的那一条如果正好是最后一条
+            // 有意义的进度，界面就永远停在更早的文案上。
+            // 现在把快照留下并安排一次延迟刷新，既保住节流，也不丢信息。
+            if (_pendingProgress is null) _pendingProgress = snapshot;
+            ScheduleTrailingFlush(now - _lastProgressFlush);
+            return;
+        }
         _lastProgressFlush = now;
 
         Progress = Math.Clamp(snapshot.Percent, 0, 100);
@@ -1147,10 +1369,16 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         // 重编码进行中速度为 0 说明 ffmpeg 还没吐第一批 progress 行，
         // 此时显示确定态会让人盯着一个不动的百分比，和卡死没有区别。
         IsIndeterminate = snapshot.Percent <= 0.01 && snapshot.Speed <= 0;
-        ProgressText = string.Format(CultureInfo.InvariantCulture, "{0:0.#}%", snapshot.Percent);
+        // 收尾/搬运阶段用一位小数：99.0 与 99.7 在整数显示下完全一样，
+        // 而用户正是靠这个数字判断"到底在动还是卡了"。
+        ProgressText = snapshot.Percent > 98 && snapshot.Percent < 100
+            ? string.Format(CultureInfo.InvariantCulture, "{0:0.0}%", snapshot.Percent)
+            : string.Format(CultureInfo.InvariantCulture, "{0:0.#}%", snapshot.Percent);
 
         // 阶段之间（探测 / 核实 / 待命）本来就没有百分比，
         // 这里明说"正在准备"而不是让数字停在原处冒充进度。
+        // 例外是 Completed：跨盘搬运输出时它是真有百分比的（99→99.9），
+        // 再补一句「此阶段无进度百分比」就自相矛盾了。
         if (snapshot.Speed <= 0 && snapshot.Percent < 99 &&
             snapshot.Stage is MergeStage.Merging or MergeStage.Verifying or MergeStage.Probing)
             ProgressDetail = string.IsNullOrEmpty(snapshot.Message)
@@ -1176,6 +1404,10 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     /// </summary>
     private static string FormatEta(MergeProgress progress)
     {
+        // 收尾阶段（写章节/校验/搬运输出）本来就没有速度数据，也不该有。
+        // 此时硬凑一个「计算中…」只会让人以为还在算，实际进度是确定的。
+        if (progress.Stage is MergeStage.WritingChapters or MergeStage.Verifying or MergeStage.Completed)
+            return "";
         if (progress.Eta is > 0 and < 86400)
             return "预计剩余 " + FormatDuration(progress.Eta.Value);
         if (progress.Percent >= 100) return "";
@@ -1217,12 +1449,47 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         return stage;
     }
 
+    /// <summary>
+    /// 任务结束时的进度区定稿。
+    ///
+    /// 必须显式改写这几项，不能只设 <see cref="Progress"/>：
+    /// 它们是上一阶段留下的快照，任务结束后不会再有任何进度回调来覆盖它们。
+    /// 少改一项，界面就会定格在「已完成 / 写入输出文件… / 99% / 预计剩余 计算中…」
+    /// 这种自相矛盾的画面上——文件明明已经写好了。
+    /// </summary>
+    private void SettleProgress(bool ok, bool cancelled, string detail)
+    {
+        _progressClosed = true;
+        _pendingProgress = null;
+        IsIndeterminate = false;
+        HasProgressInfo = true;
+        SpeedText = "";
+        EtaText = "";
+        ProgressDetail = detail;
+        if (ok)
+        {
+            Progress = 100;
+            ProgressText = "100%";
+        }
+        else
+        {
+            // 失败/取消时停在真实进度上，但把「还要多久」这类预测清掉：
+            // 任务已经结束，再说"预计剩余"就是错的。
+            ProgressText = string.Format(CultureInfo.InvariantCulture, "{0:0.#}%", Progress);
+        }
+        _ = cancelled;
+    }
+
     private void ShowResult(MergeResult result)
     {
         HasResult = true;
         ResultOk = result.Ok;
         Progress = result.Ok ? 100 : Progress;
         StageText = result.Ok ? "已完成" : result.Status == MergeStatus.Cancelled ? "已取消" : "失败";
+        SettleProgress(result.Ok, result.Status == MergeStatus.Cancelled,
+            result.Ok
+                ? $"{result.SummaryText}"
+                : result.Status == MergeStatus.Cancelled ? "任务已取消" : "任务失败");
         ResultText = result.Ok
             ? $"{result.SummaryText}\n输出：{result.OutputPath}\n用时 {result.ElapsedSeconds:0.#} 秒" +
               (result.Notices.Count > 0 ? "\n" + string.Join("\n", result.Notices) : "")

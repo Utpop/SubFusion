@@ -45,18 +45,19 @@ public sealed partial class TaskCenterViewModel : ObservableObject
     [ObservableProperty] private int completedCount;
     [ObservableProperty] private int failedCount;
 
-    public IReadOnlyList<TaskFilter> Filters { get; } = new[]
-    {
-        TaskFilter.All, TaskFilter.Running, TaskFilter.Completed, TaskFilter.Failed, TaskFilter.Cancelled,
-    };
+    /// <summary>
+    /// 下拉选项。直接绑枚举会让下拉显示 All / Running 之类的英文名，
+    /// 因此每个值配一个中文标签，由 <see cref="FilterOptions"/> 提供给界面。
+    /// </summary>
+    public sealed record FilterOption(TaskFilter Value, string Label);
 
-    public string FilterLabel(TaskFilter value) => value switch
+    public IReadOnlyList<FilterOption> FilterOptions { get; } = new[]
     {
-        TaskFilter.Running => "运行中",
-        TaskFilter.Completed => "已完成",
-        TaskFilter.Failed => "失败",
-        TaskFilter.Cancelled => "已取消",
-        _ => "全部",
+        new FilterOption(TaskFilter.All, "全部"),
+        new FilterOption(TaskFilter.Running, "运行中"),
+        new FilterOption(TaskFilter.Completed, "已完成"),
+        new FilterOption(TaskFilter.Failed, "失败"),
+        new FilterOption(TaskFilter.Cancelled, "已取消"),
     };
 
     public void Refresh()

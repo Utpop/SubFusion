@@ -9,6 +9,7 @@ public enum TaskKind
 {
     SubtitleMerge,
     VideoMerge,
+    VideoTrim,
 }
 
 /// <summary>任务的五个真实状态（与 Core 的报告一致，不虚构暂停/续传）。</summary>
@@ -65,9 +66,19 @@ public sealed partial class TaskRecord : ObservableObject
     /// <summary>结构化结果：字幕任务为 BatchSummary，视频任务为 MergeResult。</summary>
     [ObservableProperty] private object? result;
 
-    public string KindText => Kind == TaskKind.SubtitleMerge ? "字幕合并" : "视频合并";
+    public string KindText => Kind switch
+    {
+        TaskKind.SubtitleMerge => "字幕合并",
+        TaskKind.VideoMerge => "视频合并",
+        _ => "视频裁剪",
+    };
 
-    public string KindGlyph => Kind == TaskKind.SubtitleMerge ? "\uE8AC" : "\uE714";
+    public string KindGlyph => Kind switch
+    {
+        TaskKind.SubtitleMerge => "\uE8AC",
+        TaskKind.VideoMerge => "\uE714",
+        _ => "\uE8B9",
+    };
 
     public string StateText => State switch
     {
@@ -126,15 +137,6 @@ public sealed partial class TaskRecord : ObservableObject
         OnPropertyChanged(nameof(KindGlyph));
     }
 
-    public void Rename(string title, string inputSummary, string outputPath)
-    {
-        Title = title;
-        InputSummary = inputSummary;
-        OutputPath = outputPath;
-        OnPropertyChanged(nameof(Title));
-        OnPropertyChanged(nameof(InputSummary));
-        OnPropertyChanged(nameof(OutputPath));
-    }
 }
 
 /// <summary>
@@ -159,19 +161,12 @@ public sealed class TaskCenter : ObservableObject
     public event EventHandler? Changed;
 
     public int RunningCount => Tasks.Count(t => t.State == TaskState.Running);
-    public int QueuedCount => Tasks.Count(t => t.State == TaskState.Queued);
     public int CompletedCount => Tasks.Count(t => t.State == TaskState.Completed);
     public int FailedCount => Tasks.Count(t => t.State == TaskState.Failed);
     public int TotalCount => Tasks.Count;
 
     public TaskRecord? Current => Tasks.FirstOrDefault(t => t.State == TaskState.Running)
                                   ?? Tasks.FirstOrDefault(t => t.State == TaskState.Queued);
-
-    /// <summary>最近的若干条任务，按创建时间倒序。</summary>
-    public IReadOnlyList<TaskRecord> Recent(int count)
-        => Tasks.OrderByDescending(t => t.CreatedAt).Take(count).ToList();
-
-    public void Post(Action action) => _ui.RunOnUiThread(action);
 
     /// <summary>新建任务记录（可在任意线程调用，返回的记录已加入集合）。</summary>
     public TaskRecord Add(TaskKind kind, string title, string inputSummary, string outputPath)
@@ -220,14 +215,15 @@ public sealed class TaskCenter : ObservableObject
 
     /// <summary>取消任务（不支持的场景由调用方在此之前拦截）。</summary>
     public void Cancel(TaskRecord record)
-    {
-        if (!record.CanCancel) return;
-        try { record.Cancellation.Cancel(); }
-        catch (ObjectDisposedException) { /* 任务刚好收尾 */ }
-        record.Message = "正在取消…";
-        record.RefreshDerived();
-        RaiseChanged();
-    }
+        => _ui.RunOnUiThread(() =>
+        {
+            if (!record.CanCancel) return;
+            try { record.Cancellation.Cancel(); }
+            catch (ObjectDisposedException) { /* 任务刚好收尾 */ }
+            record.Message = "正在取消…";
+            record.RefreshDerived();
+            RaiseChanged();
+        });
 
     public void CancelAll()
     {
@@ -263,7 +259,6 @@ public sealed class TaskCenter : ObservableObject
         if (throttle && (DateTime.UtcNow - _lastChangedRaise).TotalMilliseconds < 200) return;
         _lastChangedRaise = DateTime.UtcNow;
         OnPropertyChanged(nameof(RunningCount));
-        OnPropertyChanged(nameof(QueuedCount));
         OnPropertyChanged(nameof(CompletedCount));
         OnPropertyChanged(nameof(FailedCount));
         OnPropertyChanged(nameof(TotalCount));

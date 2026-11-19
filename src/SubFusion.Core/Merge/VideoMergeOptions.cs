@@ -116,6 +116,18 @@ public sealed class VideoMergeOptions
     /// </summary>
     public bool DeleteSourceAfterVerify { get; set; }
 
+    /// <summary>
+    /// 输入尾部被截断时，自动只保留每个文件真正读得出来的部分，而不是直接失败。
+    ///
+    /// 为什么默认开启：下载中断、录制崩溃留下的 mp4/mkv 很常见，
+    /// 它们的容器头仍然声明完整时长，但数据在中途就断了。
+    /// 直接把这种文件交给 concat，产出的输出会「时长不符 + 结尾无法解码」，
+    /// 报错看起来像是合并做坏了，实际是素材本身残缺。
+    /// 保留可读部分后合并可以正常完成，并明确告知少了多少秒。
+    /// 关闭时引擎会在探测阶段就失败并指名哪个文件被截断。
+    /// </summary>
+    public bool SalvageTruncatedInputs { get; set; } = true;
+
     /// <summary>临时目录；null 表示每个任务使用独立临时目录（禁止任务间共享）。</summary>
     public string? TempDirectory { get; set; }
 

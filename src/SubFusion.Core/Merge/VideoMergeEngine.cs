@@ -74,10 +74,12 @@ public sealed class VideoMergeEngine
                     "输出文件已存在且未允许覆盖：" + Path.GetFileName(outputPath), diagnostics, startedAt);
 
             // 每个任务独立临时目录：绝不与其它任务共用文件名。
-            tempDir = string.IsNullOrEmpty(options.TempDirectory)
-                ? Path.Combine(Path.GetTempPath(), "subfusion_merge_" + taskId[..12])
-                : Path.Combine(Path.GetFullPath(options.TempDirectory!), taskId[..12]);
-            Directory.CreateDirectory(tempDir);
+            //
+            // 位置有讲究：默认落在系统临时目录，而系统临时目录几乎总在 C:。
+            // 输出若在别的盘，最后那一步「搬到目标路径」就是一次整文件跨盘复制——
+            // 几十 GB 的输出要多花几分钟，界面上看起来像卡在 99%。
+            // 所以这里优先让临时目录贴着输出盘：同卷时最后一步只是改名，瞬时完成。
+            tempDir = CreateTempDirectory(options, outputDir, taskId);
 
             // 2) 探测输入
             Report(MergeStage.Probing, 2, "读取输入媒体信息…", 0, options.Inputs.Count);
@@ -101,6 +103,63 @@ public sealed class VideoMergeEngine
             if (noVideo.Count > 0)
                 return Fail(taskId, MergeStage.Probing, "输入文件没有视频流：" + string.Join("；", noVideo),
                     diagnostics, startedAt);
+
+            // 2.5) 输入完整性：容器声明的时长，后面是否真有那么多数据。
+            //
+            // 这一步必须放在兼容性判定之前：截断的文件在参数上与好文件完全一致，
+            // 兼容性判定会愉快地放行，问题要等到输出校验才以「时长不符」的面目出现，
+            // 那时已经白跑了一遍几十 GB 的拼接，而且报错指向的是输出、不是坏素材。
+            Report(MergeStage.Probing, 3, "检查输入文件是否完整…", 0, bundles.Count);
+            List<InputHealth> health = await InputIntegrity.ProbeManyAsync(_tools.Ffprobe!, bundles,
+                cancellationToken).ConfigureAwait(false);
+            List<InputHealth> truncated = health.Where(h => h.Truncated).ToList();
+            foreach (InputHealth h in truncated) diagnostics.Add("[完整性] " + h.Describe());
+            if (truncated.Count > 0)
+            {
+                if (!options.SalvageTruncatedInputs)
+                    return Fail(taskId, MergeStage.Probing,
+                        "输入文件尾部被截断（容器声明的时长后面没有数据）：" +
+                        string.Join("；", truncated.Select(h => h.Describe())) +
+                        "。开启「自动保留可读部分」可用剩余数据继续合并，或先重新获取这些文件。",
+                        diagnostics, startedAt);
+
+                Report(MergeStage.Probing, 4, "按可读部分收尾截断的输入…", 0, truncated.Count);
+                for (int i = 0; i < bundles.Count; i++)
+                {
+                    InputHealth h = health[i];
+                    if (!h.Truncated) continue;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    string salvaged = Path.Combine(tempDir,
+                        "salvaged_" + i.ToString("D3", CultureInfo.InvariantCulture) +
+                        InputIntegrity.SalvagedExtension(bundles[i]));
+                    (int salvageCode, string salvageError) = await FfmpegRunner.RunFfmpegAsync(
+                        InputIntegrity.BuildSalvageCommand(_tools.Ffmpeg, bundles[i], salvaged, h.KeepSeconds),
+                        h.KeepSeconds, null, cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (salvageCode != 0 || !File.Exists(salvaged))
+                        return Fail(taskId, MergeStage.Probing,
+                            "截断输入无法按可读部分收尾：" + h.Describe() + "（" +
+                            LastLines(salvageError) + "）", diagnostics, startedAt);
+
+                    // 收尾后必须重新探测：拼接与章节时间轴都要用「实际可读时长」，
+                    // 继续沿用容器声明的时长会让输出的时间轴从头短到尾。
+                    MediaBundle repaired = await MediaInspector.InspectAsync(_tools.Ffprobe!, salvaged,
+                        cancellationToken, options.ProbeTimeoutSeconds).ConfigureAwait(false);
+                    if (!repaired.Success)
+                        return Fail(taskId, MergeStage.Probing,
+                            "收尾后的片段无法读取：" + h.Describe() + "（" + repaired.Error + "）",
+                            diagnostics, startedAt);
+
+                    diagnostics.Add(string.Format(CultureInfo.InvariantCulture,
+                        "[完整性] {0} → 保留前 {1:F2}s（原声明 {2:F2}s）",
+                        Path.GetFileName(bundles[i].Path), h.KeepSeconds, h.DeclaredSeconds));
+                    notices.Add(string.Format(CultureInfo.InvariantCulture,
+                        "{0} 尾部数据缺失（声明 {1:F2}s，实际只读到 {2:F2}s），已保留可读的 {3:F2}s 继续合并",
+                        Path.GetFileName(bundles[i].Path), h.DeclaredSeconds, h.ReadableSeconds,
+                        repaired.Duration));
+                    bundles[i] = repaired;
+                }
+            }
 
             // 3) 兼容性判定与方案选择
             Report(MergeStage.Planning, 5, "判定合并方案…");
@@ -363,6 +422,7 @@ public sealed class VideoMergeEngine
                 ? finalInfo.Duration : totalDuration;
 
             List<ChapterEntry> chapters = new();
+            var issues = new List<string>();   // 章节写入问题也汇总到这里，供第 7 步统一判定
             if (options.ChaptersEnabled)
             {
                 List<ChapterEntry> exact = ChapterTimeline.Build(durations, titles, actualDuration);
@@ -386,12 +446,15 @@ public sealed class VideoMergeEngine
                     diagnostics.Add("[章节] 已按最终时间轴重新写入 " + exact.Count + " 个章节");
                     readBack = await ChapterWriter.ReadAsync(_tools.Ffprobe!, tempOutput, cancellationToken)
                         .ConfigureAwait(false);
-                    chapters = readBack.Count > 0 ? readBack : exact;
+                    // 写入后回读为空 = 写入失败或 ffprobe 读不到章节；不能回填期望值，
+                    // 否则第 7 步的 Compare(exact, chapters) 会变成自己比自己而永远通过。
+                    if (readBack.Count == 0)
+                        issues.Add("写入章节后回读为空，无法确认章节已正确写入");
+                    chapters = readBack;
                 }
             }
 
             // 7) 输出校验
-            var issues = new List<string>();
             if (options.VerifyOutput)
             {
                 Report(MergeStage.Verifying, 97, "校验输出文件…");
@@ -437,45 +500,107 @@ public sealed class VideoMergeEngine
                 List<string> integrityIssues = await integrity.ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
                 issues.AddRange(integrityIssues);
+
+                // 内容终点：声明时长后面必须真有数据。
+                // 头尾抽样只解「最后 2 秒」并看解码器报不报错，尾部数据整体缺失时它是安静的，
+                // 因此「抽样没告警」不能当作「文件完整」。这一项看的是真解出来多少内容。
+                issues.AddRange(await OutputVerifier.CheckContentEndAsync(
+                    _tools.Ffmpeg, tempOutput, actualDuration).ConfigureAwait(false));
             }
             if (issues.Count > 0)
                 return Fail(taskId, MergeStage.Verifying, "输出校验未通过：" + string.Join("；", issues),
                     diagnostics, startedAt);
 
             // 8) 校验通过后才落到最终路径，任何失败都不会污染用户目录
-            Report(MergeStage.Completed, 99, "写入输出文件…");
+            long expectedOutputBytes = 0;
+            //
+            // 这一步曾经是「卡在 99% 很久」的元凶：File.Move 在同卷时只是改名（微秒），
+            // 跨卷（临时目录在 C:、输出在 D:）时却退化成整文件复制，且全程零进度。
+            // 几 GB 的输出要走上分钟，界面就停在 99% 一动不动。
+            // 现在跨卷复制按字节推进进度，并如实说明这是复制而不是卡住。
             try
             {
-                File.Move(tempOutput, outputPath, overwrite: true);
+                long totalBytes = new FileInfo(tempOutput).Length;
+                // 记下来供删源前比对：输出必须与刚通过校验的临时文件逐字节同长。
+                expectedOutputBytes = totalBytes;
+                bool sameVolume = FileMover.SameVolume(tempOutput, outputPath);
+                if (sameVolume)
+                {
+                    Report(MergeStage.Completed, 99, "写入输出文件…");
+                }
+                else
+                {
+                    Report(MergeStage.Completed, 99,
+                        "复制输出到目标位置…（跨磁盘，" + FileMover.Describe(totalBytes) + "）");
+                }
+
+                double lastShown = -1;
+                await FileMover.MoveAsync(tempOutput, outputPath, ratio =>
+                {
+                    // 同卷是改名，一瞬间就完成，不该出现「复制…%」这种看着像在搬家的字样。
+                    if (sameVolume) return;
+                    // 复制阶段占用 99–99.9：真正的写入进度不该把完成感压到 50%，
+                    // 但也不能一直停在同一个数字上假装没事。
+                    double percent = 99.0 + Math.Clamp(ratio, 0, 1) * 0.9;
+                    // 回调来自复制循环，比率每变 1% 才回一次；这里再按显示精度过滤，
+                    // 避免同一行文字刷屏把进度条拖慢。
+                    if (Math.Abs(ratio - lastShown) < 0.009) return;
+                    lastShown = ratio;
+                    Report(MergeStage.Completed, percent, string.Format(CultureInfo.InvariantCulture,
+                        "复制输出到目标位置…{0:F0}%（共 {1}）", ratio * 100, FileMover.Describe(totalBytes)));
+                }, cancellationToken).ConfigureAwait(false);
             }
+            catch (OperationCanceledException) { throw; }   // 交给外层按「已取消」上报
             catch (Exception ex)
             {
                 return Fail(taskId, MergeStage.Completed, "写入输出文件失败：" + ex.Message,
                     diagnostics, startedAt);
             }
 
+            // 搬运完成：立刻换掉「写入输出文件…」这句，避免界面继续停在 99% 的那条旧消息上。
+            // 从这一行到任务结束之间还有删源/全片校验等步骤，它们各自会再报告，但万一某一步
+            // 没有任何输出（例如删源时文件很多，逐个删除），至少这里不会留下误导性的旧文案。
+            Report(MergeStage.Completed, 99.2, "输出已就位，正在收尾…");
+
             // 9) 确认输出完好后再删除源文件（仅在用户明确要求时）。
             // 顺序不可颠倒：先证明输出可完整解码，再动源文件；任何一步存疑都保留源文件。
             var deletedSources = new List<string>();
             if (options.DeleteSourceAfterVerify)
             {
-                // 删源前的最后一道闸：全片解码。
-                // 前面的接缝检查只覆盖「已知接缝」，全片解码还能兜住校验窗口之外的偶发损坏，
-                // 因为是不可逆操作，这里不接受任何近似。
-                Report(MergeStage.Verifying, 99, "全片解码校验（删除源文件前）…");
-                List<string> fullDecode = await OutputVerifier.CheckFullDecodeAsync(
-                    _tools.Ffmpeg, outputPath, 1800).ConfigureAwait(false);
-                issues.AddRange(fullDecode);
+                // 删源前的最后一道闸。
+                //
+                // 原来的做法是「把整个输出逐帧解码一遍」：它是整条流程里最慢的一步，
+                // 耗时与时长线性相关（36 分钟实测 116 秒，2 小时要十几分钟），
+                // 而且不可跳过。用户每次合并都要在收尾阶段干等这么久。
+                //
+                // 现在换成两条**更便宜且更确定**的证据：
+                // 1) 字节数一致：输出与刚刚通过全部校验的临时文件必须逐字节同长。
+                //    这能确定性地排除「搬运写坏/写短」——而那正是搬到最终路径后才可能出现的新风险。
+                // 2) 全片均匀抽样解码：固定 6~16 个窗口，代价封顶在几秒，
+                //    覆盖整条时间轴，而不是只看接缝。
+                // 接缝 + 头尾 + 内容终点 + 均匀抽样 + 字节数一致，合起来比「只做全片解码」
+                // 覆盖得更全面，而代价从「随时长增长」变成「接近常数」。
+                Report(MergeStage.Verifying, 99.4, "抽样解码校验（删除源文件前）…");
+                long finalSize = 0;
+                try { finalSize = new FileInfo(outputPath).Length; }
+                catch (Exception ex) { issues.Add("无法读取输出文件大小：" + ex.Message); }
+                if (finalSize != expectedOutputBytes)
+                    issues.Add(string.Format(CultureInfo.InvariantCulture,
+                        "输出字节数与校验通过时不一致（期望 {0}，实际 {1}），搬运过程可能出错",
+                        expectedOutputBytes, finalSize));
+
+                issues.AddRange(await OutputVerifier.CheckSampledDecodeAsync(
+                    _tools.Ffmpeg, outputPath, actualDuration).ConfigureAwait(false));
 
                 if (issues.Count > 0)
                 {
                     // 校验不通过：绝不删源，按失败上报，输出文件保留供用户检查。
                     return Fail(taskId, MergeStage.Verifying,
-                        "输出未通过全片校验，已保留源文件：" + string.Join("；", issues),
+                        "输出未通过删源前校验，已保留源文件：" + string.Join("；", issues),
                         diagnostics, startedAt);
                 }
 
-                diagnostics.Add("[删源] 全片解码校验通过，开始删除源文件");
+                diagnostics.Add("[删源] 抽样解码 + 字节数校验通过，开始删除源文件");
                 foreach (string input in options.Inputs)
                 {
                     string full = Path.GetFullPath(input);
@@ -543,6 +668,57 @@ public sealed class VideoMergeEngine
                 catch { /* 临时目录清理失败不影响结果 */ }
             }
         }
+    }
+
+    /// <summary>
+    /// 解析本任务的临时目录。
+    ///
+    /// 优先级：用户指定 &gt; 与输出同卷 &gt; 系统临时目录。
+    /// 「与输出同卷」这一档是为了让最后一步搬运退化成改名而不是整文件复制；
+    /// 它建在输出目录下的隐藏子目录里，任务结束（含失败与取消）在 finally 中删除。
+    /// 用户显式指定临时目录时一律尊重用户的选择，即使那意味着要跨盘复制。
+    /// </summary>
+    private static string CreateTempDirectory(VideoMergeOptions options, string outputDir, string taskId)
+    {
+        string suffix = "subfusion_merge_" + taskId[..12];
+        if (!string.IsNullOrEmpty(options.TempDirectory))
+        {
+            string custom = Path.Combine(Path.GetFullPath(options.TempDirectory!), taskId[..12]);
+            Directory.CreateDirectory(custom);
+            return custom;
+        }
+
+        string systemTemp = Path.Combine(Path.GetTempPath(), suffix);
+        string? besideOutput = null;
+        try
+        {
+            string outputRoot = Path.GetPathRoot(Path.GetFullPath(outputDir)) ?? "";
+            string tempRoot = Path.GetPathRoot(Path.GetFullPath(systemTemp)) ?? "";
+            if (!string.Equals(outputRoot, tempRoot, StringComparison.OrdinalIgnoreCase))
+                besideOutput = Path.Combine(outputDir, ".subfusion-temp-" + taskId[..8]);
+        }
+        catch
+        {
+            // 路径判断出问题就不冒险往用户目录里建东西，下面直接用系统临时目录。
+            besideOutput = null;
+        }
+
+        if (besideOutput is not null)
+        {
+            try
+            {
+                Directory.CreateDirectory(besideOutput);
+                return besideOutput;
+            }
+            catch
+            {
+                // 输出目录可能只读、在只读网络盘上、或被策略限制。
+                // 建不出同卷目录不算故障：退回系统临时目录，最多最后多一次跨盘复制。
+            }
+        }
+
+        Directory.CreateDirectory(systemTemp);
+        return systemTemp;
     }
 
     private static MergeResult Fail(string taskId, MergeStage stage, string error,

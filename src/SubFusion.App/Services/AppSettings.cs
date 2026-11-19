@@ -125,6 +125,32 @@ public sealed class AppSettings
     public bool MergeVerify { get => _mergeVerify; set => SetValue(ref _mergeVerify, value); }
     private string _mergeOutputDir = "";
     public string MergeOutputDir { get => _mergeOutputDir; set => SetValue(ref _mergeOutputDir, value); }
+    // 默认开启：截断的素材（下载中断/录制崩溃）保留可读部分，而不是让整批合并失败。
+    private bool _mergeSalvage = true;
+    public bool MergeSalvage { get => _mergeSalvage; set => SetValue(ref _mergeSalvage, value); }
+
+    #endregion
+
+    #region 视频裁剪默认值
+
+    private string _trimContainer = "mkv";
+    public string TrimContainer { get => _trimContainer; set => SetValue(ref _trimContainer, value); }
+    /// <summary>"Copy"（无损，默认）或 "Precise"（重编码所选区间）。</summary>
+    private string _trimMode = "Copy";
+    public string TrimMode { get => _trimMode; set => SetValue(ref _trimMode, value); }
+    /// <summary>旋转角度："0" / "90" / "180" / "270"（顺时针）。</summary>
+    private string _trimRotation = "0";
+    public string TrimRotation { get => _trimRotation; set => SetValue(ref _trimRotation, value); }
+    private string _trimCodec = "libx264";
+    public string TrimCodec { get => _trimCodec; set => SetValue(ref _trimCodec, value); }
+    private double _trimCrf = 20;
+    public double TrimCrf { get => _trimCrf; set => SetValue(ref _trimCrf, value); }
+    private string _trimPreset = "medium";
+    public string TrimPreset { get => _trimPreset; set => SetValue(ref _trimPreset, value); }
+    private bool _trimVerify = true;
+    public bool TrimVerify { get => _trimVerify; set => SetValue(ref _trimVerify, value); }
+    private string _trimOutputDir = "";
+    public string TrimOutputDir { get => _trimOutputDir; set => SetValue(ref _trimOutputDir, value); }
 
     #endregion
 
@@ -181,7 +207,18 @@ public sealed class AppSettings
             MergeDeleteSource = Bool("merge_delete_source", false);
             MergePartialReencode = Bool("merge_partial_reencode", true);
             MergeAutoFallback = Bool("merge_auto_fallback", false);
+            MergeSalvage = Bool("merge_salvage", true);
             MergeOutputDir = Read("merge_outdir") ?? "";
+
+            TrimContainer = OneOf(Read("trim_container"), "mkv", "mkv", "mp4");
+            TrimMode = OneOf(Read("trim_mode"), "Copy", "Copy", "Precise");
+            TrimRotation = OneOf(Read("trim_rotation"), "0", "0", "90", "180", "270");
+            TrimCodec = OneOf(Read("trim_codec"), "libx264", "libx264", "libx265");
+            TrimCrf = Number(Read("trim_crf"), 20);
+            TrimPreset = OneOf(Read("trim_preset"), "medium",
+                "ultrafast", "veryfast", "fast", "medium", "slow", "veryslow");
+            TrimVerify = Bool("trim_verify", true);
+            TrimOutputDir = Read("trim_outdir") ?? "";
 
             LastDir = Read("last_dir") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             if (LastDir.Length == 0)
@@ -240,7 +277,17 @@ public sealed class AppSettings
                 _config.Set("merge_delete_source", MergeDeleteSource);
                 _config.Set("merge_partial_reencode", MergePartialReencode);
                 _config.Set("merge_auto_fallback", MergeAutoFallback);
+                _config.Set("merge_salvage", MergeSalvage);
                 _config.Set("merge_outdir", MergeOutputDir);
+
+                _config.Set("trim_container", TrimContainer);
+                _config.Set("trim_mode", TrimMode);
+                _config.Set("trim_rotation", TrimRotation);
+                _config.Set("trim_codec", TrimCodec);
+                _config.Set("trim_crf", ((int)TrimCrf).ToString(CultureInfo.InvariantCulture));
+                _config.Set("trim_preset", TrimPreset);
+                _config.Set("trim_verify", TrimVerify);
+                _config.Set("trim_outdir", TrimOutputDir);
 
                 _config.Set("last_dir", LastDir);
 

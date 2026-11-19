@@ -17,6 +17,23 @@ public sealed class BoolToInfoBarSeverityConverter : IValueConverter
         => value is InfoBarSeverity s && s == InfoBarSeverity.Error;
 }
 
+/// <summary>
+/// 任务是否成功 → InfoBarSeverity：true = Success（绿色），false = Error（红色）。
+///
+/// 必须与 <see cref="BoolToInfoBarSeverityConverter"/> 分开：
+/// 那个转换器的 true 表示「存在会重编码的差异」，映射到 Error；
+/// 而这里是「任务成功了」，映射到 Success。两者语义相反，
+/// 直接复用会让成功的任务显示成红色报错。
+/// </summary>
+public sealed class ResultOkToSeverityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language)
+        => value is bool ok && ok ? InfoBarSeverity.Success : InfoBarSeverity.Error;
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language)
+        => value is InfoBarSeverity s && s == InfoBarSeverity.Success;
+}
+
 /// <summary>bool → Visibility（true 显示）；ConverterParameter=invert 时反转。</summary>
 public sealed class BoolToVisibilityConverter : IValueConverter
 {
@@ -29,29 +46,6 @@ public sealed class BoolToVisibilityConverter : IValueConverter
 
     public object ConvertBack(object value, Type targetType, object parameter, string language)
         => value is Visibility v && v == Visibility.Visible;
-}
-
-/// <summary>集合/对象为 null 或空 → Collapsed；ConverterParameter=invert 时反转。</summary>
-public sealed class EmptyToVisibilityConverter : IValueConverter
-{
-    public object Convert(object value, Type targetType, object parameter, string language)
-    {
-        bool empty = value switch
-        {
-            null => true,
-            string s => s.Length == 0,
-            // bool/false 视为“空”：绑定到可空布尔时 false 应显示（与 null 一致）。
-            bool b => !b,
-            int i => i == 0,
-            System.Collections.ICollection c => c.Count == 0,
-            _ => false,
-        };
-        if (string.Equals(parameter as string, "invert", StringComparison.OrdinalIgnoreCase)) empty = !empty;
-        return empty ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    public object ConvertBack(object value, Type targetType, object parameter, string language)
-        => throw new NotSupportedException();
 }
 
 /// <summary>
@@ -108,7 +102,7 @@ public sealed class StateTagToBrushConverter : IValueConverter
 
 /// <summary>
 /// 字符串非空 → bool（用于 InfoBar.IsOpen 这类只接受布尔的属性；
-/// 注意不能复用 <see cref="EmptyToVisibilityConverter"/>，它返回的是 Visibility）。
+/// 注意不能复用 <see cref="BoolToVisibilityConverter"/>，它返回的是 Visibility）。
 /// </summary>
 public sealed class NotEmptyToBoolConverter : IValueConverter
 {
@@ -131,6 +125,31 @@ public sealed class NotEmptyToBoolConverter : IValueConverter
 }
 
 /// <summary>
+/// 字符串非空 → Visibility（空串折叠、非空显示）。
+/// 与 <see cref="NotEmptyToBoolConverter"/> 的区别只在返回类型：Visibility 属性必须用它，
+/// 直接把返回 bool 的转换器绑到 Visibility 上会在运行期抛类型转换异常。
+/// </summary>
+public sealed class NotEmptyToVisibleConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language)
+    {
+        bool visible = value switch
+        {
+            null => false,
+            string s => s.Length > 0,
+            System.Collections.ICollection c => c.Count > 0,
+            _ => true,
+        };
+        if (string.Equals(parameter as string, "invert", StringComparison.OrdinalIgnoreCase))
+            visible = !visible;
+        return visible ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language)
+        => throw new NotSupportedException();
+}
+
+/// <summary>
 /// 「这组差异会导致重新编码」→ 语义画刷。
 /// 差异分组里，会重编码的那一组用警示色、无损失的那一组保持中性色——
 /// 让颜色本身回答"画质会不会变差"，而不是要求用户读完全部差异。
@@ -144,6 +163,42 @@ public sealed class LossyToBrushConverter : IValueConverter
         return Application.Current.Resources.TryGetValue(key, out object? brush) && brush is not null
             ? brush
             : new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Gray);
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language)
+        => throw new NotSupportedException();
+}
+
+/// <summary>
+/// JPEG 字节 → ImageSource（视频裁剪页的预览帧）。
+///
+/// ViewModel 里放的是 byte[] 而不是 BitmapImage，是为了让它不引用 WinUI；
+/// 转换放在这一层，重活就只有这一个地方会碰 WinRT 类型。
+/// </summary>
+public sealed class BytesToImageConverter : IValueConverter
+{
+    public object? Convert(object value, Type targetType, object parameter, string language)
+    {
+        if (value is not byte[] bytes || bytes.Length == 0) return null;
+        try
+        {
+            var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+            using (var writer = new Windows.Storage.Streams.DataWriter(stream.GetOutputStreamAt(0)))
+            {
+                writer.WriteBytes(bytes);
+                writer.StoreAsync().AsTask().GetAwaiter().GetResult();
+                writer.FlushAsync().AsTask().GetAwaiter().GetResult();
+            }
+            stream.Seek(0);
+            var image = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage();
+            image.SetSource(stream);
+            return image;
+        }
+        catch
+        {
+            // 预览是辅助功能，解码失败不该打断裁剪流程。
+            return null;
+        }
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, string language)

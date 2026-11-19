@@ -60,19 +60,9 @@
     <SolidColorBrush x:Key="StatusDangerTintBrush" Color="{ThemeResource StatusDangerTintColor}" />
     <SolidColorBrush x:Key="StatusInfoTintBrush" Color="{ThemeResource StatusInfoTintColor}" />
 
-    <!-- 间距刻度（4 的倍数） -->
-    <x:Double x:Key="SpaceXS">4</x:Double>
-    <x:Double x:Key="SpaceS">8</x:Double>
-    <x:Double x:Key="SpaceM">12</x:Double>
-    <x:Double x:Key="SpaceL">16</x:Double>
-    <x:Double x:Key="SpaceXL">24</x:Double>
-    <x:Double x:Key="SpaceXXL">32</x:Double>
-
     <!-- 页面与卡片内边距 -->
     <Thickness x:Key="PagePadding">24,16,24,24</Thickness>
     <Thickness x:Key="CardPadding">16</Thickness>
-    <Thickness x:Key="CardPaddingWide">20</Thickness>
-    <Thickness x:Key="FieldRowPadding">0,0,0,8</Thickness>
 
     <!-- 字号层级 -->
     <x:Double x:Key="PageTitleSize">26</x:Double>

@@ -366,14 +366,8 @@ public static class NameNormalizer
 
         if (index + 1 < tokens.Count && IsDigits(next) && IsEpisodePrefix(core))
         {
-            string lowerNext = next.ToLowerInvariant();
-            if (core is "s" or "season")
-            {
-                // 季号不是集数：S01.E02 → 集数取 02，季号留进标题以便区分不同季
-                episode = lowerNext;
-                consumed = 2;
-                return false;
-            }
+            // 原"季号"分支（core is s/season）不可达且 out 值会被丢弃，已移除；
+            // S01E02 形式由上方 EpisodeShortRegex 处理。
             episode = next;
             consumed = 2;
             return true;
@@ -401,7 +395,8 @@ public static class NameNormalizer
         }
         if (IsCjk(first)) return true;
         if (!char.IsAsciiLetter(first)) return false;
-        return !Regex.IsMatch(token, @"(1080|720|2160|480|4k|8k)", RegexOptions.IgnoreCase);
+        // 必须整词匹配：原写法未锚定，标题里的 Movie1080 / Blade2160 会被当作分辨率噪声丢掉。
+        return !Regex.IsMatch(token, @"^(1080|720|2160|480|4k|8k)(p|i)?$", RegexOptions.IgnoreCase);
     }
 
     private static bool IsCjk(char c) =>

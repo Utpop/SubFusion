@@ -43,7 +43,8 @@ public sealed class FfmpegTools
         }
         catch (OperationCanceledException)
         {
-            throw;
+            // 遵守"不抛异常"契约：取消也返回带 AvailabilityError 的结果对象。
+            return new FfmpegTools { Ffprobe = resolvedFfprobe, AvailabilityError = "已取消" };
         }
         catch (Exception ex)
         {

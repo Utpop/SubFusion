@@ -27,12 +27,6 @@ public sealed partial class SubtitleRowViewModel : ObservableObject
     public string SubsText => Model.Subs.Count > 0
         ? string.Join("、", Model.Subs.Select(t => t.Label())) : "（无字幕）";
 
-    public int SubCount => Model.Subs.Count;
-    public bool HasSubs => Model.Subs.Count > 0;
-
-    public string Speed => Model.Speed;
-    public string Eta => Model.Eta;
-
     public string OutputName => string.IsNullOrEmpty(Model.Output)
         ? "" : Path.GetFileName(Model.Output);
 
@@ -85,13 +79,9 @@ public sealed partial class SubtitleRowViewModel : ObservableObject
         OnPropertyChanged(nameof(DurationText));
         OnPropertyChanged(nameof(Resolution));
         OnPropertyChanged(nameof(SubsText));
-        OnPropertyChanged(nameof(SubCount));
-        OnPropertyChanged(nameof(HasSubs));
         OnPropertyChanged(nameof(StateText));
         OnPropertyChanged(nameof(ProgressText));
         OnPropertyChanged(nameof(Progress));
-        OnPropertyChanged(nameof(Speed));
-        OnPropertyChanged(nameof(Eta));
         OnPropertyChanged(nameof(OutputName));
         OnPropertyChanged(nameof(StateTag));
         OnPropertyChanged(nameof(StateGlyph));

@@ -31,13 +31,6 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public string ConfigPath => _settings.ConfigPath;
 
-    public IReadOnlyList<(string Value, string Label)> Themes { get; } = new[]
-    {
-        ("system", "跟随系统"),
-        ("light", "浅色"),
-        ("dark", "深色"),
-    };
-
     public IReadOnlyList<string> Containers { get; } = new[] { "mkv", "mp4", "same" };
     public IReadOnlyList<string> Modes { get; } = new[] { "soft", "hard" };
     public IReadOnlyList<string> Vcodecs { get; } = new[] { "copy", "libx264", "libx265", "h264_nvenc" };
@@ -59,15 +52,12 @@ public sealed partial class SettingsViewModel : ObservableObject
             if (_settings.Theme == value) return;
             _settings.Theme = value;
             OnPropertyChanged();
-            OnPropertyChanged(nameof(ThemeLabel));
             OnPropertyChanged(nameof(IsSystemTheme));
             OnPropertyChanged(nameof(IsLightTheme));
             OnPropertyChanged(nameof(IsDarkTheme));
             SaveAndNotify();
         }
     }
-
-    public string ThemeLabel => ThemeService.ToLabel(_settings.Theme);
 
     /// <summary>三选一主题的单选按钮绑定（互斥逻辑集中在这里，XAML 里不做判断）。</summary>
     public bool IsSystemTheme

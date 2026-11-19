@@ -5,7 +5,6 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Media.Imaging;
 using SubFusion.App.Services;
 using SubFusion.App.ViewModels;
 using SubFusion.Core;
@@ -85,6 +84,8 @@ public sealed partial class MainWindow : Window, IUiServices
         if (mergeArg >= 0 && mergeArg + 1 < argv.Length) _ = RunMergeE2EAsync(argv[mergeArg + 1]);
         int subArg = Array.IndexOf(argv, "--subtitle-e2e");
         if (subArg >= 0 && subArg + 1 < argv.Length) _ = RunSubtitleE2EAsync(argv[subArg + 1]);
+        int trimArg = Array.IndexOf(argv, "--trim-e2e");
+        if (trimArg >= 0 && trimArg + 1 < argv.Length) _ = RunTrimE2EAsync(argv[trimArg + 1]);
 
         // 验收/复现钩子（--dir <文件夹>）：走与拖放完全相同的入口把文件加进来。
         int dirArg = Array.IndexOf(argv, "--dir");
@@ -217,7 +218,7 @@ public sealed partial class MainWindow : Window, IUiServices
                               " scale=" + (Root.XamlRoot?.RasterizationScale ?? 1).ToString("0.##"));
             report.AppendLine("nav=" + Nav.PaneDisplayMode + " openPane=" + Nav.IsPaneOpen);
 
-            string[] tags = { "subtitle", "merge", "tasks", "settings" };
+            string[] tags = { "subtitle", "merge", "trim", "tasks", "settings" };
             foreach (string tag in tags)
             {
                 ViewModel.NavigateCommand.Execute(tag);
@@ -428,6 +429,79 @@ public sealed partial class MainWindow : Window, IUiServices
         }
     }
 
+    /// <summary>
+    /// 视频裁剪端到端自检（--trim-e2e &lt;视频文件&gt;）：真实走一遍
+    /// 「选文件 → Core 探测/扫关键帧 → 裁剪 → 校验音画同步」，结论写进 %TEMP%\subfusion_trim_e2e.txt。
+    /// 与用户点「开始裁剪」走同一条命令路径（VideoTrimViewModel.StartCommand）。
+    /// </summary>
+    private async Task RunTrimE2EAsync(string input)
+    {
+        var report = new System.Text.StringBuilder();
+        try
+        {
+            await Task.Delay(1500);
+            ViewModel.NavigateCommand.Execute("trim");
+            Nav.SelectedItem = FindNavItem("trim");
+            await Task.Delay(800);
+
+            ViewModel.Trim.InputPath = input;
+            for (int i = 0; i < 120 && ViewModel.Trim.Analyzing; i++) await Task.Delay(250);
+            await Task.Delay(800);
+
+            report.AppendLine("input=" + input);
+            report.AppendLine("hasInput=" + ViewModel.Trim.HasInput);
+            report.AppendLine("mediaInfo=" + ViewModel.Trim.MediaInfoText.Replace("\n", " | "));
+            report.AppendLine("keyframes=" + ViewModel.Trim.KeyframeText);
+            report.AppendLine("rotation=" + ViewModel.Trim.RotationText);
+            report.AppendLine("startDefault=" + ViewModel.Trim.StartInput);
+            report.AppendLine("endDefault=" + ViewModel.Trim.EndInput);
+
+            // 请求一个必然落在两个关键帧之间的起点，验证吸附被如实展示
+            ViewModel.Trim.StartInput = "00:00:01.300";
+            ViewModel.Trim.EndInput = "00:00:03.000";
+            ViewModel.Trim.OutputDirectory = Path.GetDirectoryName(input) ?? "";
+            ViewModel.Trim.SetOutputNameForTest("trim_out");
+            ViewModel.Trim.Rotation = SubFusion.Core.Trim.RotationMode.Clockwise90;
+            await Task.Delay(600);
+
+            report.AppendLine("plan=" + ViewModel.Trim.PlanText);
+            report.AppendLine("planDetail=" + ViewModel.Trim.PlanDetail.Replace("\n", " | "));
+            report.AppendLine("planSnaps=" + ViewModel.Trim.PlanSnaps);
+            report.AppendLine("planError=" + ViewModel.Trim.PlanError);
+            report.AppendLine("outputPath=" + ViewModel.Trim.OutputPath);
+            report.AppendLine("canStart=" + ViewModel.Trim.CanStart);
+
+            ViewModel.Trim.StartCommand.Execute(null);
+            for (int i = 0; i < 240 && ViewModel.Trim.IsRunning; i++) await Task.Delay(500);
+            await Task.Delay(1500);
+
+            report.AppendLine("stage=" + ViewModel.Trim.StageText);
+            report.AppendLine("resultOk=" + ViewModel.Trim.ResultOk);
+            report.AppendLine("result=" + ViewModel.Trim.ResultText.Replace("\n", " | "));
+            report.AppendLine("outputExists=" + File.Exists(ViewModel.Trim.OutputPath));
+
+            var taskCenter = ViewModel.TaskCenterPage;
+            taskCenter.Refresh();
+            report.AppendLine("taskCount=" + taskCenter.Filtered.Count);
+            if (taskCenter.Filtered.Count > 0)
+            {
+                TaskRecord first = taskCenter.Filtered[0];
+                report.AppendLine("taskKind=" + first.KindText);
+                report.AppendLine("taskState=" + first.StateText);
+                report.AppendLine("taskLogLines=" + first.Log.Count);
+            }
+        }
+        catch (Exception ex)
+        {
+            report.AppendLine("TRIM-E2E-ERROR: " + ex);
+        }
+        finally
+        {
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "subfusion_trim_e2e.txt"), report.ToString());
+            Environment.Exit(0);
+        }
+    }
+
     private NavigationViewItem? FindNavItem(string tag)
     {
         foreach (object item in Nav.MenuItems.Concat(Nav.FooterMenuItems))
@@ -446,6 +520,7 @@ public sealed partial class MainWindow : Window, IUiServices
     private async Task RouteDropAsync(IReadOnlyList<string> paths)
     {
         if (ViewModel.SelectedTag == "merge") await ViewModel.Merge.AddPathsAsync(paths);
+        else if (ViewModel.SelectedTag == "trim") ViewModel.Trim.AcceptDroppedFile(paths);
         else await ViewModel.Subtitle.AddPathsAsync(paths);
     }
 
@@ -458,6 +533,7 @@ public sealed partial class MainWindow : Window, IUiServices
         {
             "subtitle" => typeof(Pages.SubtitlePage),
             "merge" => typeof(Pages.MergePage),
+            "trim" => typeof(Pages.TrimPage),
             "tasks" => typeof(Pages.TaskCenterPage),
             "settings" => typeof(Pages.SettingsPage),
             _ => typeof(Pages.SubtitlePage),

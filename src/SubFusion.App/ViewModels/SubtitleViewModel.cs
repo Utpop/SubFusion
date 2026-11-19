@@ -221,13 +221,11 @@ public sealed partial class SubtitleViewModel : ObservableObject, IBatchEvents
 
     #region 外部工具状态（由外壳注入）
 
-    [ObservableProperty] private string toolName = "ffmpeg";
     [ObservableProperty] private string toolDetail = "正在检测…";
     [ObservableProperty] private bool toolReady;
 
-    public void ApplyToolStatus(string name, string detail, bool ready)
+    public void ApplyToolStatus(string detail, bool ready)
     {
-        ToolName = name;
         ToolDetail = detail;
         ToolReady = ready;
         UpdateHint();

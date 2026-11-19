@@ -21,6 +21,6 @@ public sealed partial class TaskCenterPage : Page
 
     private void FilterBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (FilterBox.SelectedItem is TaskFilter filter) ViewModel.Filter = filter;
+        if (FilterBox.SelectedItem is TaskCenterViewModel.FilterOption option) ViewModel.Filter = option.Value;
     }
 }

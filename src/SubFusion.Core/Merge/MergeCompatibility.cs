@@ -207,8 +207,10 @@ public static class CompatibilityAnalyzer
         string.Join("/", new[] { v.ColorSpace, v.ColorTransfer, v.ColorPrimaries, v.ColorRange }
             .Select(s => s.Length == 0 ? "-" : s));
 
+    // MediaModels.HasSquarePixels 把 0:1 与 0:0 都视为方形；这里保持一致，
+    // 否则语义相同的两个输入会被误判 SAR 不兼容而触发无谓重编码。
     private static string NormalizeSar(string sar)
-        => sar.Length == 0 || sar == "0:1" ? "1:1" : sar;
+        => sar.Length == 0 || sar is "0:1" or "0:0" ? "1:1" : sar;
 
     private static bool Eq(string a, string b)
     {

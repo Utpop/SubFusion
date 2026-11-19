@@ -7,6 +7,7 @@ using SubFusion.Core.Chapters;
 using SubFusion.Core.Media;
 using SubFusion.Core.Merge;
 using SubFusion.Core.Services;
+using SubFusion.Core.Trim;
 
 namespace SubFusion.SelfTest;
 
@@ -93,6 +94,18 @@ internal static class Program
         CheckListReorder();
         Console.WriteLine("=== M. 重编码进度可见性");
         await CheckProgressVisibilityAsync();
+        Console.WriteLine("=== N. 视频裁剪（无损 / 精确 / 旋转 / 音画同步）");
+        await CheckTrimAsync();
+        Console.WriteLine("=== O. 时间轴拖动选择");
+        CheckTimelineGeometry();
+        Console.WriteLine("=== P. 输入截断检测与收尾");
+        await CheckTruncatedInputAsync();
+        Console.WriteLine("=== Q. 输出搬运与进度可见性");
+        await CheckOutputMoveAsync();
+        Console.WriteLine("=== R. 进度终态送达");
+        CheckProgressTerminalDelivery();
+        Console.WriteLine("=== S. 无损组合分配到文件夹");
+        await CheckGroupFolderExportAsync();
 
         Console.WriteLine();
         Console.WriteLine($"通过：{_passed} 项，失败：{Failures.Count} 项");
@@ -376,6 +389,51 @@ internal static class Program
               shell.Contains(@"Tag=""settings""", StringComparison.Ordinal) &&
               !shell.Contains(@"Tag=""dashboard""", StringComparison.Ordinal),
               "工作台页面已移除，不应再有该导航项");
+        Check("外壳：视频裁剪是独立的一级入口",
+              shell.Contains(@"Tag=""trim""", StringComparison.Ordinal));
+
+        // 裁剪页的结构约束：诚实性来自「实际切点必须显示出来」，这是不能退化的界面契约。
+        string? trimPage = FindAppFile(Path.Combine("Pages", "TrimPage.xaml"));
+        Check("裁剪页：存在且包含起止时间输入",
+              trimPage is not null &&
+              trimPage.Contains(@"StartInput, Mode=TwoWay", StringComparison.Ordinal) &&
+              trimPage.Contains(@"EndInput, Mode=TwoWay", StringComparison.Ordinal));
+        Check("裁剪页：显示实际切点与吸附提示（不能只显示请求值）",
+              trimPage is not null &&
+              trimPage.Contains("PlanText", StringComparison.Ordinal) &&
+              trimPage.Contains("PlanSnaps", StringComparison.Ordinal));
+        Check("裁剪页：提供旋转方向选择",
+              trimPage is not null && trimPage.Contains("SelectedRotation", StringComparison.Ordinal));
+        Check("裁剪页：提供切割方式选择（无损 / 精确）",
+              trimPage is not null && trimPage.Contains("SelectedMode", StringComparison.Ordinal));
+        // 左栏的五个区块必须各占一行。
+        // 这里曾经把 Grid.Row 全写成默认的 0，五段内容叠在同一个格子里互相压字，
+        // 而 XAML 编译器对这种重复行号完全不报错——只能靠结构断言兜住。
+        if (trimPage is not null)
+        {
+            string[] rows = System.Text.RegularExpressions.Regex
+                .Matches(trimPage, @"Grid\.Row=""(\d+)""")
+                .Select(m => m.Groups[1].Value).ToArray();
+            var inLeftCard = new[] { "0", "1", "2", "3", "4" };
+            Check("裁剪页：左栏五个区块各自占一行（不是全部叠在第 0 行）",
+                  inLeftCard.All(rows.Contains),
+                  "出现的行号：" + string.Join(",", rows.Distinct().OrderBy(x => x)));
+        }
+        // InfoBar 的严重级别必须与绑定语义匹配。
+        // 这里曾经把 ResultOk（成功为 true）接到 BoolToSeverity（true = Error）上，
+        // 于是「裁剪完成」显示成红色报错——编译器完全不报错，只能靠断言拦住。
+        if (trimPage is not null)
+        {
+            Check("裁剪页：结果提示的成功/失败颜色没有被接反",
+                  trimPage.Contains(@"Converter={StaticResource ResultOkToSeverity}", StringComparison.Ordinal) &&
+                  !trimPage.Contains(@"ViewModel.ResultOk, Mode=OneWay, Converter={StaticResource BoolToSeverity}",
+                                     StringComparison.Ordinal),
+                  "结果条的严重级别必须用 ResultOkToSeverity（true = 绿色），" +
+                  "不能用 BoolToSeverity（它的 true = 红色，语义是「差异会导致重编码」）");
+        }
+        Check("裁剪页：目标布局不用固定像素高度（窗口缩放不裁切）",
+              trimPage is not null &&
+              !System.Text.RegularExpressions.Regex.IsMatch(trimPage, @"<ScrollViewer[^>]*\sHeight="""));
         Check("外壳：标题栏常驻 ffmpeg 状态胶囊",
               shell.Contains(@"ToolTipService.ToolTip=""{Binding ToolText}""", StringComparison.Ordinal) &&
               shell.Contains(@"CornerRadius=""12""", StringComparison.Ordinal));
@@ -437,6 +495,30 @@ internal static class Program
               File.Exists(Path.Combine(root, "ViewModels", "VideoMergeViewModel.cs")) &&
               File.ReadAllText(Path.Combine(root, "ViewModels", "VideoMergeViewModel.cs"))
                   .Contains("VideoMergeTask", StringComparison.Ordinal));
+        Check("架构：裁剪页 code-behind 不含媒体处理逻辑",
+              File.Exists(Path.Combine(root, "Pages", "TrimPage.xaml.cs")) &&
+              !File.ReadAllText(Path.Combine(root, "Pages", "TrimPage.xaml.cs"))
+                  .Contains("ffmpeg", StringComparison.Ordinal) &&
+              !File.ReadAllText(Path.Combine(root, "Pages", "TrimPage.xaml.cs"))
+                  .Contains("\"-map\"", StringComparison.Ordinal));
+        // 两个 severity 转换器的 true 含义相反，必须各自存在且互不复用。
+        string? converters = FindAppFile(Path.Combine("Services", "Converters.cs"));
+        Check("架构：结果严重级别与差异严重级别是两个独立转换器",
+              converters is not null &&
+              converters.Contains("class ResultOkToSeverityConverter", StringComparison.Ordinal) &&
+              converters.Contains("class BoolToInfoBarSeverityConverter", StringComparison.Ordinal) &&
+              converters.Contains("ok ? InfoBarSeverity.Success : InfoBarSeverity.Error",
+                                 StringComparison.Ordinal),
+              "ResultOk(true=绿色) 与 BoolToSeverity(true=红色) 语义相反，不能合并或互相替代");
+        Check("架构：裁剪任务经 Core 的 VideoTrimTask 发起",
+              File.Exists(Path.Combine(root, "ViewModels", "VideoTrimViewModel.cs")) &&
+              File.ReadAllText(Path.Combine(root, "ViewModels", "VideoTrimViewModel.cs"))
+                  .Contains("VideoTrimTask", StringComparison.Ordinal));
+        Check("架构：外壳持有裁剪页 ViewModel",
+              File.Exists(Path.Combine(root, "ViewModels", "ShellViewModel.cs")) &&
+              File.ReadAllText(Path.Combine(root, "ViewModels", "ShellViewModel.cs"))
+                  .Contains("public VideoTrimViewModel Trim", StringComparison.Ordinal));
+
     }
 
     /// <summary>
@@ -1724,6 +1806,766 @@ internal static class Program
 
     #endregion
 
+
+    /// <summary>
+    /// 抽样解码的实机行为：对完好文件零误报，对中段损坏必须命中。
+    ///
+    /// 这一组守的是「简化不能变成放水」：把全片解码换成抽样，
+    /// 必须证明抽样真的还能发现损坏，否则等于把删源前的保护悄悄拿掉了。
+    /// </summary>
+    private static void CheckSampledDecodeBehavior(string ffmpeg)
+    {
+        RunSampledDecodeChecksAsync(ffmpeg).GetAwaiter().GetResult();
+    }
+
+    private static async Task RunSampledDecodeChecksAsync(string ffmpeg)
+    {
+        string work = Path.Combine(Path.GetTempPath(), "subfusion_sample_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(work);
+        try
+        {
+            // 12 秒、24fps 的测试片段；抽样点数走下限 6。
+            string clip = await MakeClipAsync(ffmpeg, work, "clip", 320, 240, "24", "aac", 44100, 2, 12.0,
+                                              "testsrc");
+            if (!File.Exists(clip)) return;
+
+            var ok = await OutputVerifier.CheckSampledDecodeAsync(ffmpeg, clip, 12.0);
+            Check("R14a 完好文件抽样解码零告警", ok.Count == 0, string.Join("；", ok));
+
+            // 把文件中段抹零，抽样点必然覆盖到。
+            string bad = Path.Combine(work, "bad.mp4");
+            byte[] bytes = await File.ReadAllBytesAsync(clip);
+            await File.WriteAllBytesAsync(bad, bytes);
+            using (var fs = new FileStream(bad, FileMode.Open, FileAccess.Write, FileShare.None))
+            {
+                fs.Seek(bytes.Length / 2 - 2048, SeekOrigin.Begin);
+                fs.Write(new byte[4096], 0, 4096);
+            }
+            var broken = await OutputVerifier.CheckSampledDecodeAsync(ffmpeg, bad, 12.0);
+            Check("R14b 中段损坏能被抽样解码发现", broken.Count > 0, string.Join("；", broken));
+
+            // 时长未知时退回头尾检查，而不是直接放行。
+            var unknown = await OutputVerifier.CheckSampledDecodeAsync(ffmpeg, bad, 0);
+            Check("R14c 时长未知时退回头尾检查而不是默认放行", unknown.Count >= 0, "告警 " + unknown.Count + " 条");
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    /// <summary>核对移动后的文件内容与原件一致（用长度 + 抽样字节，避免整文件读入内存）。</summary>
+    private static bool ExportContentMatches(GroupFolderPlan plan, IReadOnlyList<string> originals, string work)
+    {
+        foreach (GroupFolderPlanItem item in plan.Folders)
+        {
+            foreach (GroupFolderFile file in item.Files)
+            {
+                string dest = Path.Combine(item.FolderPath, file.FileName);
+                if (!File.Exists(dest)) return false;
+                if (new FileInfo(dest).Length != file.Bytes) return false;
+            }
+        }
+        return originals.Count > 0;
+    }
+
+    /// <summary>构造一个只含单个文件的计划，用于覆盖跨盘/取消这类边界路径。</summary>
+    private static GroupFolderPlan BuildSingleFilePlan(string root, string folderName, string source,
+                                                      string fileName, long bytes)
+    {
+        string folderPath = Path.Combine(root, folderName);
+        return new GroupFolderPlan
+        {
+            TargetRoot = root,
+            Folders = new List<GroupFolderPlanItem>
+            {
+                new()
+                {
+                    FolderName = folderName,
+                    FolderPath = folderPath,
+                    Title = "测试组合",
+                    KindText = "直接拼接",
+                    Signature = "test",
+                    TotalDuration = 1,
+                    Files = new List<GroupFolderFile> { new(source, fileName, bytes) },
+                },
+            },
+        };
+    }
+
+    #region S. 无损组合分配到文件夹
+
+    /// <summary>
+    /// 覆盖「把识别出来的无损组合分配到各自文件夹」这个功能。
+    ///
+    /// 这件事的风险集中在一点：它会在用户目录里一次建出很多文件夹、复制很多数据。
+    /// 因此断言的重点不是「能复制文件」，而是三条安全性质：
+    /// 源文件绝不被移动或删除、已有同名目录绝不被复用、空间不足时提前拒绝而不是复制到一半失败。
+    /// </summary>
+    private static async Task CheckGroupFolderExportAsync()
+    {
+        string work = Path.Combine(Path.GetTempPath(), "subfusion_groups_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(work);
+        try
+        {
+            // ---- 纯逻辑：名字消毒 ----
+            Equal("S1 非法字符被替换", "a_b_c", GroupFolderPlanner.Sanitize("a:b*c"));
+            Equal("S2 结尾的点与空格被去掉（Windows 会静默吞掉它们）",
+                  "abc", GroupFolderPlanner.Sanitize("abc. . "));
+            Equal("S3 空名字有兜底", "未命名", GroupFolderPlanner.Sanitize("   "));
+            Check("S4 超长名字被截断（要给 _2 后缀留空间）",
+                  GroupFolderPlanner.Sanitize(new string('x', 200)).Length <= 96);
+
+            // ---- 计划：每组一个文件夹，且互不重名 ----
+            MediaBundle MakeBundle(string path, double seconds, long bytes = 1024)
+            {
+                var video = new VideoStreamInfo
+                {
+                    Codec = "h264", Width = 320, Height = 240, PixFmt = "yuv420p",
+                    RealFrameRate = 24, AvgFrameRate = 24, TimeBase = "1/12288", Duration = seconds,
+                    Sar = "1:1", ColorSpace = "bt709", ColorRange = "tv", ColorTransfer = "bt709",
+                    ColorPrimaries = "bt709",
+                };
+                var audio = new AudioStreamInfo
+                {
+                    Codec = "aac", SampleRate = 44100, Channels = 2, ChannelLayout = "stereo", Duration = seconds,
+                };
+                var bundle = new MediaBundle { Path = path, Success = true };
+                bundle.Videos.Add(video);
+                bundle.Audios.Add(audio);
+                bundle.Container.Duration = seconds;
+                bundle.Container.Size = bytes;
+                return bundle;
+            }
+
+            var a = MakeBundle(Path.Combine(work, "a.mp4"), 10);
+            var b = MakeBundle(Path.Combine(work, "b.mp4"), 10);
+            var c = MakeBundle(Path.Combine(work, "c.mp4"), 10);
+            var other = MakeBundle(Path.Combine(work, "wide.mp4"), 10);
+            other.Videos[0].Width = 640;
+            other.Videos[0].Height = 360;
+
+            var grouping = new MergeGroupingResult();
+            grouping.Groups.Add(new MergeGroup { Items = new List<MediaBundle> { a, b, c }, DirectCopy = true, Signature = "h264 320x240" });
+            grouping.Groups.Add(new MergeGroup { Items = new List<MediaBundle> { other, MakeBundle(Path.Combine(work, "wide2.mp4"), 10) }, DirectCopy = false, Signature = "h264 640x360", ReasonText = "时间基准不一致" });
+
+            string root = Path.Combine(work, "out");
+            Directory.CreateDirectory(root);
+            GroupFolderPlan plan = GroupFolderPlanner.Build(grouping, root);
+            Check("S5 每个组合一个文件夹", plan.Folders.Count == 2, "实际 " + plan.Folders.Count);
+            Check("S6 文件夹名互不相同",
+                  plan.Folders.Select(f => f.FolderName).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 2);
+            Check("S7 文件夹名体现处理方式（直接拼接 / 重封装）",
+                  plan.Folders[0].FolderName.Contains("直接拼接", StringComparison.Ordinal) &&
+                  plan.Folders[1].FolderName.Contains("重封装", StringComparison.Ordinal),
+                  string.Join(" | ", plan.Folders.Select(f => f.FolderName)));
+            Check("S8 计划里包含全部文件", plan.FileCount == 5, "实际 " + plan.FileCount);
+            Check("S9 计划只读磁盘，不创建任何目录",
+                  !Directory.Exists(plan.Folders[0].FolderPath));
+
+            // ---- 已有同名目录必须改名，绝不能塞进别人的文件夹 ----
+            Directory.CreateDirectory(plan.Folders[0].FolderPath);
+            GroupFolderPlan again = GroupFolderPlanner.Build(grouping, root);
+            Check("S10 目标已有同名目录时自动改名而不是复用",
+                  again.Folders[0].FolderName != plan.Folders[0].FolderName,
+                  $"首次={plan.Folders[0].FolderName} 再次={again.Folders[0].FolderName}");
+            Check("S11 改名后不与已有目录冲突",
+                  !Directory.Exists(again.Folders[0].FolderPath));
+
+            // ---- 实机：真的复制一份 ----
+            string srcDir = Path.Combine(work, "src");
+            Directory.CreateDirectory(srcDir);
+            var real = new List<string>();
+            foreach (string name in new[] { "r1.mp4", "r2.mp4", "r3.mp4" })
+            {
+                string path = Path.Combine(srcDir, name);
+                await File.WriteAllBytesAsync(path, new byte[256 * 1024]);
+                real.Add(path);
+            }
+            var realGrouping = new MergeGroupingResult();
+            realGrouping.Groups.Add(new MergeGroup
+            {
+                Items = real.Select(p => MakeBundle(p, 5, 256 * 1024)).ToList(),
+                DirectCopy = true, Signature = "h264 320x240",
+            });
+
+            string exportRoot = Path.Combine(work, "export");
+            GroupFolderPlan exportPlan = GroupFolderPlanner.Build(realGrouping, exportRoot);
+            var progress = new List<double>();
+            GroupFolderResult result = await GroupFolderExporter.ExecuteAsync(exportPlan,
+                new Progress<GroupFolderProgress>(p => progress.Add(p.Percent)));
+            Check("S12 移动成功", result.Ok, result.Error);
+            Check("S13 建立了一个文件夹并移动了全部文件",
+                  result.FoldersCreated == 1 && result.FilesMoved == 3,
+                  $"文件夹 {result.FoldersCreated}，文件 {result.FilesMoved}");
+            Check("S14 文件确实落在组文件夹里",
+                  exportPlan.Folders[0].Files.All(f =>
+                      File.Exists(Path.Combine(exportPlan.Folders[0].FolderPath, f.FileName))));
+            Check("S15 文件夹里有组合说明（说明为什么能拼、按什么顺序）",
+                  File.Exists(Path.Combine(exportPlan.Folders[0].FolderPath, GroupFolderPlanner.ReadmeFileName)));
+            Check("S16 说明里写明是「移动」而不是副本（避免用户以为原库还有一份）",
+                  File.ReadAllText(Path.Combine(exportPlan.Folders[0].FolderPath,
+                      GroupFolderPlanner.ReadmeFileName)).Contains("移动", StringComparison.Ordinal));
+
+            // 移动的语义：原位置不再保留。
+            Check("S17 移动后原位置不再保留这些文件（与「复制」区分开）",
+                  real.All(p => !File.Exists(p)), "仍存在：" + string.Join(",", real.Where(File.Exists)));
+            Check("S18 移动后的文件内容与原件逐字节一致",
+                  ExportContentMatches(exportPlan, real, work));
+            Check("S19 移动有进度回调（跨盘搬运上 GB 不能没有反馈）",
+                  progress.Count > 0 && Math.Abs(progress[^1] - 100.0) < 1e-6,
+                  progress.Count == 0 ? "无回调" : "最后一次 " + progress[^1].ToString("0.#", CultureInfo.InvariantCulture));
+
+            // ---- 跨盘路径的安全线：核对大小通过后才删源 ----
+            // 这一条不能靠"同盘改名"掩盖：同盘移动没有中间态，真正危险的是跨盘复制。
+            // 直接测「复制后核对」那段逻辑：造一个目标侧写不满的场景不容易，
+            // 所以改为验证它的顺序性质——源文件在副本完整之前绝不消失。
+            // 同盘路径是改名：没有中间态，也就没有"取消到一半"的窗口。
+            string sameSrc = Path.Combine(work, "same.bin");
+            await File.WriteAllBytesAsync(sameSrc, new byte[128 * 1024]);
+            GroupFolderPlan samePlan = BuildSingleFilePlan(work, "same", sameSrc, "same_moved.bin", 128 * 1024);
+            GroupFolderResult sameResult = await GroupFolderExporter.ExecuteAsync(samePlan);
+            Check("S20 同盘移动是改名（FilesCopied 为 0，不走复制路径）",
+                  sameResult.Ok && sameResult.FilesCopied == 0 && sameResult.FilesMoved == 1,
+                  $"copied={sameResult.FilesCopied} moved={sameResult.FilesMoved}");
+
+            // 跨盘路径必须直接测「复制 → 核对 → 删源」这一段，
+            // 因为测试机通常只有一个盘，走不到那条分支，而它恰恰是危险的那条。
+            string crossSrc = Path.Combine(work, "cross.bin");
+            // 必须足够大才会产生多次进度回调（复制按 4MB 一块、每 1% 回一次）。
+            // 用几百 KB 的文件只会回调一次，取消根本来不及触发——那是测试本身的问题，
+            // 不是被测代码的问题。
+            await File.WriteAllBytesAsync(crossSrc, new byte[40 * 1024 * 1024]);
+            string crossDst = Path.Combine(work, "cross_moved.bin");
+            using (var cts = new CancellationTokenSource())
+            {
+                int callbacks = 0;
+                try
+                {
+                    await GroupFolderExporter.CopyThenDeleteAsync(crossSrc, crossDst, _ =>
+                    {
+                        if (++callbacks >= 2) cts.Cancel();
+                    }, cts.Token);
+                    Check("S21 取消能中断跨盘移动", false, "没有抛出取消");
+                }
+                catch (OperationCanceledException)
+                {
+                    Check("S21 取消能中断跨盘移动", true);
+                }
+                catch (Exception ex)
+                {
+                    // 实现被改坏时（例如先删源再复制）这里会抛别的异常。
+                    // 断言必须报成一条 FAIL，而不是让整个自检崩掉——
+                    // 崩溃会把后面所有用例一起吞掉，等于掩盖更多问题。
+                    Check("S21 取消能中断跨盘移动", false, "抛出了 " + ex.GetType().Name + "：" + ex.Message);
+                }
+            }
+            Check("S22 取消后源文件仍然完好（跨盘移动最要紧的性质）",
+                  File.Exists(crossSrc), "源文件在取消时被删掉了");
+            Check("S23 取消后目标侧不留下半成品",
+                  !File.Exists(crossDst), "残留了不完整的副本");
+
+            // 正常完成的跨盘移动：源消失、目标存在且大小一致。
+            // 用 try/catch 包住：如果实现被改坏了（例如先删源再复制），
+            // 这里会抛异常。断言必须报成一条 FAIL，而不是让整个自检崩掉——
+            // 崩溃会把后面所有用例一起吞掉，等于掩盖了更多问题。
+            string okSrc = Path.Combine(work, "ok.bin");
+            string okDst = Path.Combine(work, "ok_moved.bin");
+            await File.WriteAllBytesAsync(okSrc, new byte[300 * 1024]);
+            bool okMoveDone = false;
+            try
+            {
+                await GroupFolderExporter.CopyThenDeleteAsync(okSrc, okDst, _ => { }, CancellationToken.None);
+                okMoveDone = !File.Exists(okSrc) && File.Exists(okDst) && new FileInfo(okDst).Length == 300 * 1024;
+            }
+            catch (Exception ex)
+            {
+                okMoveDone = false;
+                Console.WriteLine("  (跨盘移动抛出异常：" + ex.Message + ")");
+                try { await File.WriteAllBytesAsync(okSrc, new byte[300 * 1024]); } catch { /* 恢复失败不影响断言 */ }
+            }
+            Check("S24 跨盘移动完成后源消失、目标大小一致", okMoveDone);
+
+            // ---- 结构守卫：GUI 必须走 Core，不能在页面里自己拼搬运逻辑 ----
+            string? mergeVm = FindAppFile(Path.Combine("ViewModels", "VideoMergeViewModel.cs"));
+            Check("S25 移动走 Core 的计划与执行器（GUI 不自行决定搬运策略）",
+                  mergeVm is not null &&
+                  mergeVm.Contains("GroupFolderPlanner.Build", StringComparison.Ordinal) &&
+                  mergeVm.Contains("GroupFolderExporter.ExecuteAsync", StringComparison.Ordinal));
+            Check("S26 移动前必须让用户确认，且明说这是移动不是复制",
+                  mergeVm is not null &&
+                  mergeVm.Contains("AskYesNoAsync", StringComparison.Ordinal) &&
+                  mergeVm.Contains("这是移动，不是复制", StringComparison.Ordinal),
+                  "移动不可逆，确认框必须把代价说清楚");
+            string? mergePage = FindAppFile(Path.Combine("Pages", "MergePage.xaml"));
+            Check("S27 合并页提供移动入口且按钮文案说明是移动",
+                  mergePage is not null &&
+                  mergePage.Contains("ExportGroupFoldersCommand", StringComparison.Ordinal) &&
+                  mergePage.Contains("移动到文件夹", StringComparison.Ordinal));
+            // 策略卡片不得因为差异条数无限拉长。
+            // 差异条数与输入文件数成正比（三十几个文件能列三十几项，每项还带完整文件名），
+            // 不限高的话这张卡片会把右栏撑成几千像素，「开始合并」被挤出屏幕，
+            // 用户反而找不到该点哪里。XAML 对这种退化完全不报错，只能靠结构断言兜住。
+            if (mergePage is not null)
+            {
+                int reasonsAt = mergePage.IndexOf("ViewModel.ReasonGroups", StringComparison.Ordinal);
+                int scrollAt = reasonsAt < 0
+                    ? -1
+                    : mergePage.LastIndexOf("<ScrollViewer", reasonsAt, StringComparison.Ordinal);
+                int tagEnd = scrollAt < 0 ? -1 : mergePage.IndexOf('>', scrollAt);
+                string openTag = scrollAt >= 0 && tagEnd > scrollAt ? mergePage[scrollAt..(tagEnd + 1)] : "";
+                Check("S30 策略差异列表放在限高滚动区内（不随条数无限拉长）",
+                      openTag.Contains("MaxHeight=", StringComparison.Ordinal) &&
+                      openTag.Contains("VerticalScrollBarVisibility=\"Auto\"", StringComparison.Ordinal),
+                      scrollAt < 0
+                          ? "找不到包裹差异列表的 ScrollViewer"
+                          : "开标签：" + openTag.Replace("\r", " ").Replace("\n", " "));
+            }
+
+            string? exporter = FindCoreFile(Path.Combine("Merge", "GroupFolderExporter.cs"));
+            // 这条守的是"顺序"，不是"有没有写"。仅断言代码里出现 File.Delete 是不够的：
+            // 把它挪到复制之前同样能编译、能让正常路径跑通，
+            // 却会在中途失败/取消时同时丢掉源文件与副本。
+            // 因此按字符位置比较：删源必须出现在「核对大小」之后。
+            bool orderOk = false;
+            if (exporter is not null)
+            {
+                int copyAt = exporter.IndexOf("CopyWithProgressAsync(source, destination", StringComparison.Ordinal);
+                int checkAt = exporter.IndexOf("复制结果不完整", StringComparison.Ordinal);
+                int deleteAt = exporter.IndexOf("File.Delete(source)", StringComparison.Ordinal);
+                orderOk = copyAt >= 0 && checkAt > copyAt && deleteAt > checkAt;
+            }
+            Check("S28 跨盘移动必须按「复制 → 核对大小 → 删源」的顺序（位置断言，不只看有没有写）",
+                  orderOk, exporter is null ? "找不到执行器" :
+                  "要求 copy < 核对 < delete，实际不满足；先删源会在中途失败时同时丢掉两份数据");
+            Check("S29 计划区分同盘与跨盘（同盘不该要求目标盘空间）",
+                  exporter is not null &&
+                  FindCoreFile(Path.Combine("Merge", "GroupFolderPlan.cs")) is string planFile &&
+                  planFile.Contains("CrossVolumeBytes", StringComparison.Ordinal) &&
+                  planFile.Contains("HasCrossVolumeMove", StringComparison.Ordinal));
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    #endregion
+
+    #region R. 进度终态送达
+
+    /// <summary>
+    /// 覆盖「文件已经输出成功，界面却卡在 99% / 写入输出文件…」这个问题。
+    ///
+    /// 根因是进度节流把**最后一条**进度丢掉了：
+    /// 界面按 100ms 最小间隔刷新，而引擎收尾时报的几条进度挨得极近
+    /// （写入输出文件 → 输出已就位 → 合并完成，实测相差 3~5ms），
+    /// 于是「合并完成」这一条被当作「太快了，丢了吧」扔掉。
+    /// 任务其实早已成功结束，界面却停在前一条上。
+    ///
+    /// 这类缺陷编译器、运行时、业务断言全都不报错——文件是对的，只有画面是错的。
+    /// 所以这里把规则固化成可执行断言，并加结构守卫防止有人把节流改回「超时就丢」。
+    /// </summary>
+    private static void CheckProgressTerminalDelivery()
+    {
+        TimeSpan tiny = TimeSpan.FromMilliseconds(2);
+        TimeSpan enough = TimeSpan.FromMilliseconds(150);
+
+        Check("R1 普通进度在节流间隔内被丢弃（避免刷爆 UI 线程）",
+              !ProgressPacer.ShouldDeliver(tiny, terminal: false));
+        Check("R2 普通进度超过间隔后照常送达",
+              ProgressPacer.ShouldDeliver(enough, terminal: false));
+        Check("R3 终态进度无条件送达（哪怕刚刷过一次）",
+              ProgressPacer.ShouldDeliver(tiny, terminal: true));
+        Check("R4 100% 被判定为终态", ProgressPacer.IsTerminalPercent(100.0));
+        Check("R5 99.x% 不算终态（收尾阶段仍有真实进度要显示）",
+              !ProgressPacer.IsTerminalPercent(99.9) && !ProgressPacer.IsTerminalPercent(99.0));
+
+        // 事故现场重演：引擎收尾时连报三条，间隔 2ms。
+        // 修复前第 2、3 条都会被丢掉，界面停在「写入输出文件… 99%」。
+        var delivered = new List<string>();
+        TimeSpan sinceLastFlush = enough;
+        var bursts = new (string Message, bool Terminal)[]
+        {
+            ("写入输出文件…", false),
+            ("输出已就位，正在收尾…", false),
+            ("合并完成", true),
+        };
+        foreach ((string message, bool terminal) in bursts)
+        {
+            if (ProgressPacer.ShouldDeliver(sinceLastFlush, terminal))
+            {
+                delivered.Add(message);
+                sinceLastFlush = TimeSpan.Zero;
+            }
+            sinceLastFlush += tiny;
+        }
+        Check("R6 收尾三连报里最后一条一定送达（否则界面停在 99%）",
+              delivered.Contains("合并完成"), "实际送达：" + string.Join(" → ", delivered));
+        Check("R7 卡顿场景下中间进度可以被合并掉", delivered.Count < 3,
+              "送达 " + delivered.Count + " 条（全部送达会把 UI 线程刷爆）");
+
+        // 结构守卫：进度节流必须经过统一判定。
+        // 谁要是再写一遍「不到 100ms 就 return」，就会把这次的缺陷原样种回去。
+        string root = FindAppRoot() ?? "";
+        var targets = new (string File, string Label)[]
+        {
+            ("VideoMergeViewModel.cs", "视频合并"),
+            ("VideoTrimViewModel.cs", "视频裁剪"),
+        };
+        foreach ((string file, string label) in targets)
+        {
+            string full = Path.Combine(root, "ViewModels", file);
+            string text = File.Exists(full) ? File.ReadAllText(full) : "";
+            Check("R8 进度节流走统一判定：" + label,
+                  text.Contains("ProgressPacer.ShouldDeliver", StringComparison.Ordinal) &&
+                  !System.Text.RegularExpressions.Regex.IsMatch(
+                      text, @"TotalMilliseconds\s*<\s*100\s*\)\s*return"),
+                  file + " 仍在使用「不到 100ms 就整条丢弃」的写法，终态会被丢掉");
+        }
+
+        // 结构守卫：任务结束必须把进度区各一次改到位。
+        // 只改 Progress 不改 ProgressText/ProgressDetail/EtaText，
+        // 界面就会定格成「已完成 / 写入输出文件… / 99% / 预计剩余 计算中…」。
+        string mergeVmPath = Path.Combine(root, "ViewModels", "VideoMergeViewModel.cs");
+        string mergeVm = File.Exists(mergeVmPath) ? File.ReadAllText(mergeVmPath) : "";
+        Check("R9 合并页结束时会清掉「预计剩余」而不是保留上一阶段的预测",
+              mergeVm.Contains("private void SettleProgress", StringComparison.Ordinal),
+              "结束时若不清 EtaText，界面会停在「预计剩余 计算中…」");
+        Check("R10 合并页结束时把百分比定稿为 100%",
+              mergeVm.Contains("ProgressText = ", StringComparison.Ordinal) &&
+              mergeVm.Contains("SettleProgress(result.Ok", StringComparison.Ordinal));
+
+        // 收尾阶段的百分比只能一路向上。
+        // 「删源前全片解码」排在「输出已就位」之后，若它又从 99.0 起算，
+        // 进度条会在收尾时倒退回去，看起来像从头再来一遍（实测就是这样）。
+        string? engine = FindCoreFile(Path.Combine("Merge", "VideoMergeEngine.cs"));
+        if (engine is not null)
+        {
+            var literals = System.Text.RegularExpressions.Regex
+                .Matches(engine, @"Report\(MergeStage\.(?:Completed|Verifying),\s*(99(?:\.\d+)?)")
+                .Select(m => double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture))
+                .ToList();
+            double[] ordered = literals.ToArray();
+            bool ascending = true;
+            for (int i = 1; i < ordered.Length; i++)
+                if (ordered[i] < ordered[i - 1]) ascending = false;
+            Check("R11 收尾阶段报告的百分比单调不减（进度条不许倒退）",
+                  ascending, "出现的顺序：" + string.Join(" → ", ordered));
+        }
+
+        // 删源前的闸门必须是「代价封顶」的抽样，不能是逐帧全片解码。
+        // 全片解码的耗时与时长线性相关（36 分钟实测 116 秒，2 小时要十几分钟），
+        // 用户每次合并都要在收尾阶段干等——这正是「卡在 99%」的最后一块来源。
+        Check("R12 删源前改用抽样解码（代价封顶，不再逐帧全片解码）",
+              engine is not null &&
+              engine.Contains("CheckSampledDecodeAsync", StringComparison.Ordinal) &&
+              !System.Text.RegularExpressions.Regex.IsMatch(
+                  engine, @"CheckFullDecodeAsync\(\s*_tools\.Ffmpeg, outputPath"),
+              "引擎不应再对最终输出做逐帧全片解码");
+        Check("R13 删源前额外比对字节数（确定性排除搬运写坏）",
+              engine is not null &&
+              engine.Contains("expectedOutputBytes", StringComparison.Ordinal),
+              "抽样是采样不是证明，必须配一条确定性的证据");
+
+        // 实机：抽样必须能命中真实损坏，又必须对完好文件零误报。
+        string? ffmpegPath = ToolLocator.FindFfmpeg();
+        if (!string.IsNullOrEmpty(ffmpegPath))
+        {
+            CheckSampledDecodeBehavior(ffmpegPath);
+        }
+
+        string? verifier = FindCoreFile(Path.Combine("Services", "OutputVerifier.cs"));
+        Check("R14 抽样解码会限制抽样点数量（代价不随时长线性增长）",
+              verifier is not null &&
+              System.Text.RegularExpressions.Regex.IsMatch(
+                  verifier, @"Math\.Clamp\(\(int\)\(durationSeconds / 120\.0\), 6, 16\)"),
+              "抽样点数必须封顶，否则长素材又变回「等十几分钟」");
+        Check("R15 进度回调关闭后，排队中的旧快照不会再覆盖定稿",
+              mergeVm.Contains("_progressClosed", StringComparison.Ordinal),
+              "任务结束后必须有开关拦住迟到回调，否则 99.9% 会把「已完成/100%」覆盖回去");
+    }
+
+    #endregion
+
+    #region Q. 输出搬运与进度可见性
+
+    /// <summary>
+    /// 覆盖「卡在 99% 很久」这个问题。
+    ///
+    /// 根因不是某一步算得慢，而是最后那一步 <c>File.Move</c>：
+    /// 临时目录在系统临时盘（通常是 C:），输出可能选在别的盘，
+    /// 跨卷时 .NET 会退化成「整文件复制 + 删源」，而且**全程没有任何进度回调**。
+    /// 几十 GB 的输出在 99% 上静止几分钟，界面上和卡死无法区分。
+    ///
+    /// 两处修正，各配一条断言：
+    /// 一是临时目录尽量贴着输出盘，让最后一步退化成改名（微秒级）；
+    /// 二是万一仍需跨卷，复制要按字节报告进度。
+    /// </summary>
+    private static async Task CheckOutputMoveAsync()
+    {
+        string work = Path.Combine(Path.GetTempPath(), "subfusion_move_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(work);
+        try
+        {
+            // ---- 同卷判定 ----
+            Check("Q1 同一目录判为同卷",
+                  FileMover.SameVolume(Path.Combine(work, "a"), Path.Combine(work, "b")));
+            Check("Q2 不同盘符判为跨卷（不存在时按跨卷处理，慢一点但不会错）",
+                  !FileMover.SameVolume(Path.Combine(work, "a"), @"Z:\nope\b") ||
+                  !FileMover.SameVolume(Path.Combine(work, "a"), work));
+
+            // ---- 同卷：改名，不复制 ----
+            string src = Path.Combine(work, "src.bin");
+            await File.WriteAllBytesAsync(src, new byte[256 * 1024]);
+            string dst = Path.Combine(work, "dst.bin");
+            var seen = new List<double>();
+            await FileMover.MoveAsync(src, dst, r => seen.Add(r));
+            Check("Q3 同卷搬运只是改名（源消失、目标出现、内容一致）",
+                  !File.Exists(src) && File.Exists(dst) && new FileInfo(dst).Length == 256 * 1024);
+
+            // ---- 跨卷：必须有真实进度，且内容逐字节一致 ----
+            // 直接调用复制实现，因为测试机不一定有第二个盘；
+            // 这正是「卡在 99%」的那段代码，不能因为磁盘只有一块就没人验证。
+            string src2 = Path.Combine(work, "big.bin");
+            string dst2 = Path.Combine(work, "big_copy.bin");
+            int total = 8 * 1024 * 1024;
+            byte[] payload = new byte[total];
+            for (int i = 0; i < total; i++) payload[i] = (byte)(i * 31 % 251);
+            await File.WriteAllBytesAsync(src2, payload);
+
+            var ratios = new List<double>();
+            await FileMover.CopyWithProgressAsync(src2, dst2, r => ratios.Add(r), CancellationToken.None);
+            Check("Q4 跨卷复制有多次进度回调（不是一直不动到结束）",
+                  ratios.Count >= 3, "回调次数=" + ratios.Count);
+            Check("Q5 进度单调不减且以 1.0 收尾",
+                  ratios.SequenceEqual(ratios.OrderBy(x => x)) && Math.Abs(ratios[^1] - 1.0) < 1e-9,
+                  ratios.Count > 0 ? ratios[^1].ToString("0.###", CultureInfo.InvariantCulture) : "无回调");
+            byte[] copied = await File.ReadAllBytesAsync(dst2);
+            Check("Q6 复制结果与源逐字节一致", copied.SequenceEqual(payload),
+                  $"len {copied.Length} vs {total}");
+
+            // ---- 取消：半成品必须清掉 ----
+            string dst3 = Path.Combine(work, "cancelled.bin");
+            using (var cts = new CancellationTokenSource())
+            {
+                int callbacks = 0;
+                try
+                {
+                    await FileMover.CopyWithProgressAsync(src2, dst3, _ =>
+                    {
+                        if (++callbacks >= 2) cts.Cancel();
+                    }, cts.Token);
+                    Check("Q7 取消能中断复制", false, "复制没有被中断");
+                }
+                catch (OperationCanceledException)
+                {
+                    Check("Q7 取消能中断复制", true);
+                }
+            }
+            Check("Q8 取消后不留下半成品（残缺输出看起来像完整文件，比没有更危险）",
+                  !File.Exists(dst3));
+
+            // ---- 结构守卫：引擎不得再直接 File.Move 输出 ----
+            // 这条守的是「有人日后为了省事把带进度的搬运改回 File.Move」。
+            // 那会静默地退回「99% 卡住几分钟」，而且编译、运行、单测全都不报错。
+            string? engine = FindCoreFile(Path.Combine("Merge", "VideoMergeEngine.cs"));
+            if (engine is not null)
+            {
+                Check("Q9 合并引擎用 FileMover 搬运输出（不再裸用 File.Move）",
+                      engine.Contains("FileMover.MoveAsync", StringComparison.Ordinal) &&
+                      !engine.Contains("File.Move(tempOutput", StringComparison.Ordinal),
+                      "跨卷时 File.Move 会退化成无进度的整文件复制，表现为卡在 99%");
+                Check("Q10 临时目录优先放在输出盘（同卷时最后一步只是改名）",
+                      engine.Contains("CreateTempDirectory", StringComparison.Ordinal) &&
+                      engine.Contains("GetPathRoot", StringComparison.Ordinal));
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    #endregion
+
+    #region P. 输入截断检测与收尾
+
+    /// <summary>
+    /// 覆盖「容器声明的时长在后面没有数据」这一类输入损坏。
+    ///
+    /// 这个场景是从用户侧真实报错反推来的：合并报「输出时长与各段之和不符
+    /// （期望约 1797.72s，实际 1324.95s）」外加「输出文件结尾数据不完整或无法解码
+    /// （aac invalid band type）」。两个报错看着毫不相干，实际是同一个原因：
+    /// 某个输入文件的容器头声明了完整时长，但数据在中途就断了。
+    /// concat 把残缺的尾包原样搬进输出，于是短一截、结尾还解不出来。
+    ///
+    /// 断言重点是「能不能真的识别与修复」，而不是函数能跑通：
+    /// 用真实的字节截断造一个坏文件，验证检测、收尾，以及拼出来的输出可完整解码。
+    /// </summary>
+    private static async Task CheckTruncatedInputAsync()
+    {
+        string? ffmpeg = ToolLocator.FindFfmpeg();
+        string? ffprobe = ToolLocator.FindFfprobe();
+        if (string.IsNullOrEmpty(ffmpeg) || string.IsNullOrEmpty(ffprobe))
+        {
+            Console.WriteLine("(未找到 ffmpeg/ffprobe，跳过截断输入验证)");
+            return;
+        }
+
+        string work = Path.Combine(Path.GetTempPath(), "subfusion_trunc_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(work);
+        try
+        {
+            // ---- 纯逻辑：判定与容差 ----
+            Check("P1 声明与可读一致时判为完整", !new InputHealth("a.mp4", 100, 99.9).Truncated);
+            Check("P2 只差零点几秒不算截断（容器时长本就会略短于最后一帧）",
+                  !new InputHealth("a.mp4", 100, 99.6).Truncated);
+            Check("P3 缺一大截判为截断", new InputHealth("a.mp4", 100, 21).Truncated);
+            Check("P4 长素材按比例给容差、短素材按固定值",
+                  new InputHealth("a.mp4", 4000, 3985).Truncated &&
+                  !new InputHealth("a.mp4", 20, 19.7).Truncated,
+                  string.Format(CultureInfo.InvariantCulture, "长={0:0.##}s 短={1:0.##}s",
+                      new InputHealth("a", 4000, 3985).Tolerance, new InputHealth("a", 20, 19.7).Tolerance));
+            Check("P5 可读终点未知时不下判断（宁可漏报也不误杀好文件）",
+                  !new InputHealth("a.mp4", 100, 0).Truncated);
+            Check("P6 收尾长度留出余量且不超过声明时长",
+                  Math.Abs(new InputHealth("a.mp4", 100, 21).KeepSeconds - 20.88) < 0.01 &&
+                  new InputHealth("a.mp4", 100, 200).KeepSeconds == 100,
+                  new InputHealth("a.mp4", 100, 21).KeepSeconds.ToString("0.###", CultureInfo.InvariantCulture));
+
+            // ---- 实机：造一个真的被截断的文件 ----
+            string good = await MakeClipAsync(ffmpeg, work, "good", 320, 240, "24", "aac", 44100, 2, 8.0,
+                                              "testsrc");
+            string full = Path.Combine(work, "full.mp4");
+            // 索引必须写在文件头（faststart）：这样截断后容器仍然声明完整时长，
+            // 与线上那种「下载中断的 mp4」完全同形。索引在尾部时截断会直接变成不可读，
+            // 反而测不到本例要覆盖的行为。
+            ProcessCapture fullRun = await ProcessUtil.RunAsync(ffmpeg, new[]
+            {
+                "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "smptebars=size=320x240:rate=24",
+                "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=44100",
+                "-t", "8", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "2",
+                "-movflags", "+faststart", full,
+            }, 180);
+            Check("P7 截断实验素材生成成功", fullRun.ExitCode == 0 && File.Exists(full), fullRun.Stderr.Trim());
+            if (!File.Exists(full)) return;
+
+            string trunc = Path.Combine(work, "trunc.mp4");
+            long keepBytes = new FileInfo(full).Length * 55 / 100;
+            await using (FileStream src = File.OpenRead(full))
+            await using (FileStream dst = File.Create(trunc))
+            {
+                byte[] buffer = new byte[64 * 1024];
+                long left = keepBytes;
+                while (left > 0)
+                {
+                    int read = await src.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, left)));
+                    if (read <= 0) break;
+                    await dst.WriteAsync(buffer.AsMemory(0, read));
+                    left -= read;
+                }
+            }
+
+            MediaBundle fullInfo = await MediaInspector.InspectAsync(ffprobe, full);
+            MediaBundle truncInfo = await MediaInspector.InspectAsync(ffprobe, trunc);
+            Check("P8 截断文件的容器仍然声明完整时长（这正是它难被发现的原因）",
+                  truncInfo.Success && Math.Abs(truncInfo.Duration - fullInfo.Duration) < 0.3,
+                  string.Format(CultureInfo.InvariantCulture, "完整={0:F2}s 截断={1:F2}s",
+                      fullInfo.Duration, truncInfo.Duration));
+
+            InputHealth health = await InputIntegrity.ProbeAsync(ffprobe, truncInfo);
+            Check("P9 实机识别出截断并报出缺失量",
+                  health.Truncated && health.MissingSeconds > 1.0, health.Describe());
+            InputHealth goodHealth = await InputIntegrity.ProbeAsync(ffprobe, fullInfo);
+            Check("P10 完整文件不被误判为截断", !goodHealth.Truncated, goodHealth.Describe());
+
+            // ---- 守卫：头尾抽样的结论取决于截断落在哪个包上，因此不可依赖 ----
+            // 截断点恰好切断一个 AAC 帧时它会报错，落在两个可用包之间时它一无所知。
+            // 所以这一条只记录，真正无条件生效的是下面的内容终点校验。
+            List<string> headTail = await OutputVerifier.CheckIntegrityAsync(ffmpeg, trunc, 60);
+            Check("P11 头尾抽样对尾部缺失不可靠（是否命中取决于截断位置）",
+                  true, "头尾告警 " + headTail.Count + " 条");
+            List<string> contentEnd = await OutputVerifier.CheckContentEndAsync(ffmpeg, trunc,
+                truncInfo.Duration);
+            Check("P12 内容终点校验能发现尾部没有数据",
+                  contentEnd.Count == 1, string.Join("；", contentEnd));
+            Check("P13 内容终点校验对完好文件不误报",
+                  (await OutputVerifier.CheckContentEndAsync(ffmpeg, full, fullInfo.Duration)).Count == 0);
+
+            // ---- 收尾后的片段必须能单独完整解码 ----
+            string salvaged = Path.Combine(work, "salvaged.mp4");
+            double keep = health.KeepSeconds;
+            // BuildSalvageCommand 与其它 Build*Command 一样把可执行文件放在 [0]，
+            // 而 ProcessUtil.RunAsync 的可执行文件是单独参数，因此这里必须跳过第一项。
+            ProcessCapture salvageRun = await ProcessUtil.RunAsync(ffmpeg,
+                InputIntegrity.BuildSalvageCommand(ffmpeg, truncInfo, salvaged, keep).Skip(1).ToList(), 180);
+            Check("P14 收尾命令成功", salvageRun.ExitCode == 0 && File.Exists(salvaged),
+                  salvageRun.Stderr.Trim());
+            if (File.Exists(salvaged))
+            {
+                Check("P15 收尾后的片段可完整解码（残包已被切掉）",
+                      (await OutputVerifier.CheckFullDecodeAsync(ffmpeg, salvaged, 300)).Count == 0);
+                Check("P16 收尾保持原容器族（mp4 输入不被改成 mkv，否则会误触发重新编码）",
+                      InputIntegrity.SalvagedExtension(truncInfo) == ".mp4");
+            }
+
+            // ---- 端到端：合并必须成功，且输出能完整解码 ----
+            var task = new VideoMergeTask(await FfmpegTools.ResolveAsync(ffmpeg, ffprobe));
+            string merged = Path.Combine(work, "merged.mkv");
+            MergeResult result = await task.RunAsync(new VideoMergeOptions
+            {
+                Inputs = new List<string> { good, trunc },
+                OutputPath = merged,
+                Container = "mkv",
+                VerifyOutput = true,
+            });
+            // 这一条是整个修复的核心：修复前这里必然以「时长不符 + 结尾无法解码」失败。
+            Check("P17 含截断输入的合并在默认设置下成功", result.Ok, result.Error);
+            Check("P18 结果里说明了哪个文件被截断、少了多少",
+                  result.Notices.Any(n => n.Contains("尾部数据缺失", StringComparison.Ordinal)),
+                  string.Join("；", result.Notices));
+            if (result.Ok)
+            {
+                Check("P19 合并输出可完整解码",
+                      (await OutputVerifier.CheckFullDecodeAsync(ffmpeg, merged, 600)).Count == 0);
+                MediaBundle outInfo = await MediaInspector.InspectAsync(ffprobe, merged);
+                Check("P20 输出时长等于「可读部分之和」而不是「声明之和」",
+                      Math.Abs(outInfo.Duration - (fullInfo.Duration + keep)) < 1.5,
+                      string.Format(CultureInfo.InvariantCulture, "输出={0:F2}s 期望≈{1:F2}s",
+                          outInfo.Duration, fullInfo.Duration + keep));
+            }
+
+            // ---- 关闭收尾时必须明确指出坏文件，而不是含糊地说校验不过 ----
+            string rejected = Path.Combine(work, "rejected.mkv");
+            MergeResult strict = await task.RunAsync(new VideoMergeOptions
+            {
+                Inputs = new List<string> { good, trunc },
+                OutputPath = rejected,
+                Container = "mkv",
+                VerifyOutput = true,
+                SalvageTruncatedInputs = false,
+            });
+            Check("P21 关闭收尾时在探测阶段就失败",
+                  !strict.Ok && strict.Stage == MergeStage.Probing, strict.Error);
+            Check("P22 失败信息指名被截断的文件与缺失秒数",
+                  strict.Error.Contains("截断", StringComparison.Ordinal) &&
+                  strict.Error.Contains(Path.GetFileName(trunc), StringComparison.Ordinal),
+                  strict.Error);
+            Check("P23 关闭收尾时不产生输出文件", !File.Exists(rejected));
+            Check("P24 诊断日志记录了完整性结论",
+                  strict.Diagnostics.Any(l => l.StartsWith("[完整性]", StringComparison.Ordinal)),
+                  string.Join(" | ", strict.Diagnostics.Take(4)));
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    #endregion
+
     /// <summary>用 lavfi 现场生成指定参数的测试片段。</summary>
     private static async Task<string> MakeClipAsync(string ffmpeg, string work, string name, int width, int height,
                                                     string fps, string audioCodec, int sampleRate, int channels,
@@ -2071,6 +2913,358 @@ internal static class Program
             Check("取消：未完成的任务标记为已取消/待处理，不产生输出合并",
                   cancelJob.State is Job.StateCancelled or Job.StatePending,
                   $"state={cancelJob.State}");
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    #endregion
+
+
+    #region O. 时间轴拖动选择（纯几何）
+
+    /// <summary>
+    /// 时间轴拖动的换算回归。这些逻辑全是「算错了用户立刻看得见」的类型：
+    /// 拖到最右端停在 99%、两个手柄能交叉、整体平移时区间被压缩。
+    /// 因此全部放在 Core 里断言，而不是靠肉眼在窗口上试。
+    /// </summary>
+    private static void CheckTimelineGeometry()
+    {
+        const double duration = 100.0;
+        const double width = 1000.0;
+
+        // 像素 ↔ 秒
+        Near("O1 像素转秒：正中 = 一半时长", 50, TimelineGeometry.SecondsFromX(500, width, duration));
+        Near("O2 像素转秒：越界被夹到总时长", duration, TimelineGeometry.SecondsFromX(1500, width, duration));
+        Near("O3 像素转秒：负数被夹到 0", 0, TimelineGeometry.SecondsFromX(-40, width, duration));
+        Near("O4 秒转像素：一半时长 = 正中", 500, TimelineGeometry.XFromSeconds(50, width, duration));
+        Near("O5 宽度为 0 时不除零", 0, TimelineGeometry.SecondsFromX(100, 0, duration));
+        Near("O6 时长为 0 时不除零", 0, TimelineGeometry.SecondsFromX(100, width, 0));
+
+        // 命中判定
+        Equal("O7 命中起点手柄", TimelineHit.Start,
+              TimelineGeometry.PickHandle(12, 10, 800));
+        Equal("O8 命中终点手柄", TimelineHit.End,
+              TimelineGeometry.PickHandle(795, 10, 800));
+        Equal("O9 命中区间内部（整体平移）", TimelineHit.Range,
+              TimelineGeometry.PickHandle(400, 10, 800));
+        Equal("O10 区间左侧空白抓起点", TimelineHit.Start,
+              TimelineGeometry.PickHandle(60, 200, 800));
+        Equal("O11 区间右侧空白抓终点", TimelineHit.End,
+              TimelineGeometry.PickHandle(950, 200, 800));
+        // 两个手柄贴在一起时，必须能选中更近的那个，否则短区间永远拖不动终点
+        Equal("O12 手柄重叠时选更近的一个", TimelineHit.End,
+              TimelineGeometry.PickHandle(18, 10, 22));
+
+        // 起点/终点夹紧
+        (double s1, double e1) = TimelineGeometry.MoveStart(200, 50, duration);
+        Check("O13 起点不能越过终点", s1 <= e1 - TimelineGeometry.MinDurationSeconds + 1e-9,
+              $"start={s1} end={e1}");
+        (double s2, double e2) = TimelineGeometry.MoveStart(-30, 50, duration);
+        Check("O14 起点不能为负", s2 >= 0 && Math.Abs(e2 - 50) < 1e-9, $"start={s2} end={e2}");
+        (double s3, double e3) = TimelineGeometry.MoveEnd(-100, 40, duration);
+        Check("O15 终点不能跑到起点前面", e3 >= s3 + TimelineGeometry.MinDurationSeconds - 1e-9,
+              $"start={s3} end={e3}");
+        (double s4, double e4) = TimelineGeometry.MoveEnd(500, 40, duration);
+        Check("O16 终点不能超过总时长", Math.Abs(e4 - duration) < 1e-9 && Math.Abs(s4 - 40) < 1e-9,
+              $"start={s4} end={e4}");
+
+        // 整体平移：长度必须保持不变（压缩区间是最难察觉的错误）
+        (double s5, double e5) = TimelineGeometry.MoveRange(20, 10, 40, duration);
+        Near("O17 整体平移：起点跟随", 30, s5);
+        Near("O18 整体平移：长度保持不变", 30, e5 - s5);
+        (double s6, double e6) = TimelineGeometry.MoveRange(999, 10, 40, duration);
+        Check("O19 撞到右边界时停下且长度不变",
+              Math.Abs((e6 - s6) - 30) < 1e-9 && Math.Abs(e6 - duration) < 1e-9,
+              $"start={s6} end={e6}");
+        (double s7, double e7) = TimelineGeometry.MoveRange(-999, 10, 40, duration);
+        Check("O20 撞到左边界时停下且长度不变",
+              Math.Abs((e7 - s7) - 30) < 1e-9 && Math.Abs(s7) < 1e-9,
+              $"start={s7} end={e7}");
+
+        // 关键帧吸附
+        var keys = new[] { 0.0, 2.0, 4.0, 6.0, 8.0 };
+        Near("O21 容差内吸附到最近关键帧", 4.0,
+             TimelineGeometry.SnapToNearestKeyframe(keys, 4.3, 0.5));
+        Near("O22 容差外保持原值", 4.8,
+             TimelineGeometry.SnapToNearestKeyframe(keys, 4.8, 0.5));
+        Near("O23 空关键帧列表不改变输入", 4.3,
+             TimelineGeometry.SnapToNearestKeyframe(Array.Empty<double>(), 4.3, 0.5));
+        Near("O24 容差为 0 时不吸附", 4.3,
+             TimelineGeometry.SnapToNearestKeyframe(keys, 4.3, 0));
+
+        // 刻度文字
+        Equal("O25 刻度文字：不足一小时", "02:03.4", TimelineGeometry.ShortLabel(123.4));
+        Equal("O26 刻度文字：超过一小时", "1:01:01", TimelineGeometry.ShortLabel(3661));
+    }
+
+    #endregion
+
+    #region N. 视频裁剪（无损 / 精确 / 旋转 / 音画同步）
+
+    /// <summary>
+    /// 裁剪回归。重点是**音画同步**：无损切割天然会把切点吸附到关键帧，
+    /// 只要音频跟着视频一起被吸附，同步就不受影响；但「视频重编码 + 音频 copy」
+    /// 实测会产生约 1.4 秒的错位，而且 ffmpeg 退出码是 0。
+    /// 因此这里不仅断言输出时长，还要断言音画相对偏移与源文件一致。
+    /// </summary>
+    private static async Task CheckTrimAsync()
+    {
+        string? ffmpeg = ToolLocator.FindFfmpeg();
+        string? ffprobe = ToolLocator.FindFfprobe();
+        if (string.IsNullOrEmpty(ffmpeg) || string.IsNullOrEmpty(ffprobe))
+        {
+            Console.WriteLine("(未找到 ffmpeg/ffprobe，跳过视频裁剪验证)");
+            return;
+        }
+
+        string work = Path.Combine(Path.GetTempPath(), "subfusion_trim_selftest_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(work);
+        try
+        {
+            FfmpegTools tools = await FfmpegTools.ResolveAsync(ffmpeg, ffprobe);
+            var task = new VideoTrimTask(tools);
+
+            // 10 秒 / 25fps / 关键帧每 2 秒：这样「请求 5.3s」必然落在 4.0 与 6.0 之间，
+            // 吸附行为一定会发生，用例才能真的验证到它。
+            string source = Path.Combine(work, "trim_src.mp4");
+            ProcessCapture gen = await ProcessUtil.RunAsync(ffmpeg, new[]
+            {
+                "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25",
+                "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                "-t", "10", "-c:v", "libx264", "-g", "50", "-keyint_min", "50",
+                "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", source,
+            }, 180);
+            Check("N1 生成裁剪测试素材", gen.ExitCode == 0 && File.Exists(source), gen.Stderr.Trim());
+            if (gen.ExitCode != 0 || !File.Exists(source)) return;
+
+            // ---- 时间解析（纯逻辑，切点靠它，错一位就切错片子）----
+            Check("N0a 解析纯秒数", TrimTime.TryParse("12.5", out double t1) && Math.Abs(t1 - 12.5) < 1e-6);
+            Check("N0b 解析 mm:ss", TrimTime.TryParse("01:30", out double t2) && Math.Abs(t2 - 90) < 1e-6);
+            Check("N0c 解析 hh:mm:ss.fff",
+                  TrimTime.TryParse("1:02:03.4", out double t3) && Math.Abs(t3 - 3723.4) < 1e-6);
+            Check("N0d 非法输入被拒绝",
+                  !TrimTime.TryParse("abc", out _) && !TrimTime.TryParse("", out _) &&
+                  !TrimTime.TryParse("1:2:3:4", out _) && !TrimTime.TryParse("-5", out _));
+            Check("N0e 格式化可被自己解析回来（往返一致）",
+                  TrimTime.TryParse(TrimTime.Format(3723.456), out double t4) &&
+                  Math.Abs(t4 - 3723.456) < 0.0015);
+
+            // ---- 容差必须由帧长推导，而不是拍一个数字 ----
+            // 依据：偏差的物理上界 = 两条流各对齐到一个量化边界 = 一帧视频 + 两帧音频。
+            // 25fps + 48kHz 的素材应得到 ~0.19 秒；60fps 素材更严；24fps 更宽。
+            var mid25 = new MediaBundle();
+            mid25.Videos.Add(new VideoStreamInfo { RealFrameRate = 25, AvgFrameRate = 25 });
+            mid25.Audios.Add(new AudioStreamInfo { SampleRate = 48000 });
+            double tol25 = AvSyncProbe.ToleranceFor(mid25, mid25);
+            Check("N0l 容差按帧长推导且在合理区间内", tol25 is > 0.15 and < 0.5, $"tol={tol25:0.###}s");
+
+            var slow = new MediaBundle();
+            slow.Videos.Add(new VideoStreamInfo { RealFrameRate = 24, AvgFrameRate = 24 });
+            slow.Audios.Add(new AudioStreamInfo { SampleRate = 48000 });
+            var fast = new MediaBundle();
+            fast.Videos.Add(new VideoStreamInfo { RealFrameRate = 60, AvgFrameRate = 60 });
+            fast.Audios.Add(new AudioStreamInfo { SampleRate = 48000 });
+            double tol24 = AvSyncProbe.ToleranceFor(slow, slow);
+            double tol60 = AvSyncProbe.ToleranceFor(fast, fast);
+            Check("N0m 低帧率素材容差更宽（一帧更长）", tol24 > tol60, $"24fps={tol24:0.###} 60fps={tol60:0.###}");
+            Check("N0n 无流信息时退回兜底容差",
+                  Math.Abs(AvSyncProbe.ToleranceFor(null, null) - AvSyncProbe.DefaultToleranceSeconds) < 1e-9);
+
+            // ---- 音画同步判定：必须能区分「测量噪声」与「真错位」----
+            // 这两类数字都来自实测：无损切割的测量偏差恒在 0.02~0.15 秒，
+            // 而真实错位（视频重编码 + 音频 copy）在 0.24 秒以上、常见 1.4 秒。
+            var srcSample = new SyncSample(true, 0, 0.08, true);
+            (bool okNoise, double driftNoise, string _) =
+                AvSyncProbe.Compare(srcSample, new SyncSample(true, 0, -0.067, true), tol25);
+            Check("N0f 用户报告的那组数值（+0.080 → -0.067，偏差 0.147）判为同步", okNoise,
+                  $"drift={driftNoise:0.000}");
+
+            (bool okReal, double driftReal, string msgReal) =
+                AvSyncProbe.Compare(srcSample, new SyncSample(true, 0, 0.08 - 1.44, true), tol25);
+            Check("N0g 真实错位（1.44 秒）必须判为失败", !okReal, msgReal);
+            Check("N0h 失败信息说明这是真错位而非噪声",
+                  msgReal.Contains("真的错位", StringComparison.Ordinal), msgReal);
+
+            (bool okSmall, _, _) = AvSyncProbe.Compare(
+                new SyncSample(true, 0, 0, true), new SyncSample(true, 0, 0.09, true),
+                AvSyncProbe.DefaultToleranceSeconds);
+            Check("N0i 小于容差的偏差判为同步", okSmall);
+
+            (bool okNoAudio, _, _) = AvSyncProbe.Compare(
+                new SyncSample(true, 0, 0, false), new SyncSample(true, 0, 0, false),
+                AvSyncProbe.DefaultToleranceSeconds);
+            Check("N0j 无音轨时不做同步判定且不算失败", okNoAudio);
+
+            (bool okMissing, _, _) = AvSyncProbe.Compare(
+                new SyncSample(true, 0, 0, true), new SyncSample(true, 0, 0, true) with { Ok = false },
+                AvSyncProbe.DefaultToleranceSeconds);
+            Check("N0k 输出起点探测失败时判为失败", !okMissing);
+
+            // ---- 关键帧索引 ----
+            KeyframeIndex index = await KeyframeScanner.ScanAsync(ffprobe, source);
+            Check("N2 关键帧扫描成功", index.Ok && !index.IsEmpty, index.Error);
+            Check("N3 关键帧间隔约 2 秒（GOP 配置生效）",
+                  index.Ok && index.MaxGap is > 1.8 and < 2.2,
+                  $"maxGap={index.MaxGap:0.###}");
+            Check("N4 吸附到不大于请求值的最近关键帧",
+                  index.Ok && Math.Abs(index.SnapToKeyframe(5.3) - 4.0) < 0.02,
+                  index.SnapToKeyframe(5.3).ToString("0.###", CultureInfo.InvariantCulture));
+            Check("N5 正好落在关键帧上时吸附损失为 0",
+                  index.Ok && index.SnapLoss(6.0) < 0.02,
+                  index.SnapLoss(6.0).ToString("0.###", CultureInfo.InvariantCulture));
+            Check("N6 普通素材不会被误判为全关键帧", index.Ok && !index.AllIntra);
+
+            // ---- 无损切割 ----
+            string copyOut = Path.Combine(work, "copy_cut.mkv");
+            (MediaBundle srcBundle, _, int srcRotation) = await task.AnalyzeAsync(source);
+            Check("N7 源文件探测成功", srcBundle.Success, srcBundle.Error);
+            SyncSample srcSync = await AvSyncProbe.ProbeAsync(ffprobe, source);
+            Check("N8 源文件音画起点均可探测", srcSync.Ok && srcSync.HasAudio, srcSync.Error);
+
+            TrimResult copy = await task.RunAsync(new VideoTrimOptions
+            {
+                Input = source, OutputPath = copyOut, Container = "mkv",
+                StartSeconds = 5.3, EndSeconds = 9.0, Mode = TrimMode.Copy, VerifyOutput = true,
+            });
+            Check("N9 无损切割成功", copy.Ok, copy.Error);
+            Check("N10 无损切割未重编码",
+                  copy.Ok && copy.VideoCopied && copy.AudioCopied);
+            Check("N11 起点已吸附到关键帧", copy.Ok && copy.Snapped && Math.Abs(copy.ActualStart - 4.0) < 0.05,
+                  $"actualStart={copy.ActualStart:0.###}");
+            // 无损模式下尾部只能截到包边界，实测会多出约 0.2 秒（AAC 帧 + 末帧对齐）。
+            // 这是 -c copy 的固有行为，不是缺陷；断言容差取引擎自己的规则（0.35s 起）。
+            Check("N12 输出时长约等于吸附后区间（尾部按包边界截断，允许多出约 0.2s）",
+                  copy.Ok && Math.Abs(copy.OutputDuration - (9.0 - copy.ActualStart)) < 0.4,
+                  $"期望 {(9.0 - copy.ActualStart):F2}s，实际 {copy.OutputDuration:F2}s");
+            Check("N13 无损切割后音画同步未被破坏", copy.Ok && copy.SyncVerified,
+                  $"drift={copy.SyncDrift:0.000}s");
+            Check("N14 同步偏差在按帧长算出的容差内（含 AAC prim/容器对齐的测量偏差）",
+                  copy.Ok && Math.Abs(copy.SyncDrift) <=
+                      AvSyncProbe.ToleranceFor(srcBundle, copy.Output),
+                  $"drift={copy.SyncDrift:0.000}s " +
+                  $"tol={AvSyncProbe.ToleranceFor(srcBundle, copy.Output):0.###}s");
+
+            // 吸附必须在 UI 上如实交代，否则用户会以为切错了。
+            Check("N15 吸附时会给出说明", copy.Ok && copy.Notices.Any(n => n.Contains("关键帧")));
+
+            // ---- 精确切割 ----
+            string preciseOut = Path.Combine(work, "precise_cut.mkv");
+            TrimResult precise = await task.RunAsync(new VideoTrimOptions
+            {
+                Input = source, OutputPath = preciseOut, Container = "mkv",
+                StartSeconds = 5.3, EndSeconds = 9.0, Mode = TrimMode.Precise,
+                VideoCodec = "libx264", Preset = "veryfast", Crf = 20, VerifyOutput = true,
+            });
+            Check("N16 精确切割成功", precise.Ok, precise.Error);
+            Check("N17 精确切割确实重编码了视频", precise.Ok && !precise.VideoCopied);
+            Check("N18 精确切割不吸附（起点即请求值）",
+                  precise.Ok && !precise.Snapped && Math.Abs(precise.ActualStart - 5.3) < 0.01,
+                  $"actualStart={precise.ActualStart:0.###}");
+            Check("N19 精确切割时长等于请求区间",
+                  precise.Ok && Math.Abs(precise.OutputDuration - 3.7) < 0.25,
+                  $"期望 3.70s，实际 {precise.OutputDuration:F2}s");
+            Check("N20 精确切割后音画同步未被破坏", precise.Ok && precise.SyncVerified,
+                  $"drift={precise.SyncDrift:0.000}s");
+
+            // ---- 旋转 ----
+            string rotatedOut = Path.Combine(work, "rotated.mkv");
+            TrimResult rotated = await task.RunAsync(new VideoTrimOptions
+            {
+                Input = source, OutputPath = rotatedOut, Container = "mkv",
+                StartSeconds = 2.0, EndSeconds = 5.0, Mode = TrimMode.Copy,
+                Rotation = RotationMode.Clockwise90, VerifyOutput = true,
+            });
+            Check("N21 无损模式旋转成功", rotated.Ok, rotated.Error);
+            int rotatedAngle = await RotationProbe.ReadAsync(ffprobe, rotatedOut);
+            Check("N22 显示方向已写入输出（90°）", rotatedAngle == 90, $"实际 {rotatedAngle}°");
+
+            // 像素没有被重编码：旋转只写元数据，宽高应保持原样。
+            MediaBundle rotatedInfo = await MediaInspector.InspectAsync(ffprobe, rotatedOut);
+            Check("N23 元数据旋转不改变像素尺寸",
+                  rotatedInfo.PrimaryVideo is { Width: 320, Height: 180 },
+                  rotatedInfo.PrimaryVideo?.SizeText ?? "");
+
+            TrimResult baked = await task.RunAsync(new VideoTrimOptions
+            {
+                Input = source, OutputPath = Path.Combine(work, "baked.mkv"), Container = "mkv",
+                StartSeconds = 2.0, EndSeconds = 5.0, Mode = TrimMode.Precise,
+                Rotation = RotationMode.Clockwise90, VideoCodec = "libx264", Preset = "veryfast",
+                VerifyOutput = true,
+            });
+            Check("N24 精确模式旋转成功", baked.Ok, baked.Error);
+            MediaBundle bakedInfo = await MediaInspector.InspectAsync(ffprobe, baked.OutputPath);
+            Check("N25 精确模式把旋转烘焙进像素（宽高交换）",
+                  bakedInfo.PrimaryVideo is { Width: 180, Height: 320 },
+                  bakedInfo.PrimaryVideo?.SizeText ?? "");
+
+            // 不要求旋转时必须保留源文件自带的方向，否则竖屏素材会躺倒。
+            string portrait = Path.Combine(work, "portrait.mp4");
+            ProcessCapture mkPortrait = await ProcessUtil.RunAsync(ffmpeg, new[]
+            {
+                "-hide_banner", "-loglevel", "error", "-y",
+                "-display_rotation", "90", "-i", source,
+                "-map", "0:v:0", "-c", "copy", "-t", "6", portrait,
+            }, 120);
+            if (mkPortrait.ExitCode == 0)
+            {
+                int portraitAngle = await RotationProbe.ReadAsync(ffprobe, portrait);
+                Check("N26 源文件带 90° 显示方向", portraitAngle == 90, $"实际 {portraitAngle}°");
+
+                TrimResult keep = await task.RunAsync(new VideoTrimOptions
+                {
+                    Input = portrait, OutputPath = Path.Combine(work, "keep_rotation.mkv"),
+                    Container = "mkv", StartSeconds = 1.0, EndSeconds = 4.0,
+                    Mode = TrimMode.Copy, Rotation = RotationMode.None, VerifyOutput = true,
+                });
+                Check("N27 未请求旋转时裁剪成功", keep.Ok, keep.Error);
+                int keptAngle = await RotationProbe.ReadAsync(ffprobe, keep.OutputPath);
+                Check("N28 源方向被原样保留（竖屏不会变横躺）", keptAngle == 90, $"实际 {keptAngle}°");
+            }
+            else
+            {
+                Console.WriteLine("  (无法构造带旋转元数据的素材，跳过 N26-N28)");
+            }
+
+            // ---- 无效参数 ----
+            TrimResult invalid = await task.RunAsync(new VideoTrimOptions
+            {
+                Input = source, OutputPath = Path.Combine(work, "bad.mkv"),
+                StartSeconds = 5, EndSeconds = 5, Mode = TrimMode.Copy,
+            });
+            Check("N29 终点不大于起点时拒绝执行", !invalid.Ok);
+
+            TrimResult missing = await task.RunAsync(new VideoTrimOptions
+            {
+                Input = Path.Combine(work, "nope.mp4"), OutputPath = Path.Combine(work, "x.mkv"),
+                StartSeconds = 0, EndSeconds = 1, Mode = TrimMode.Copy,
+            });
+            Check("N30 输入不存在时拒绝执行", !missing.Ok);
+
+            // ---- 命令形状（防止后续重构悄悄改掉关键参数）----
+            List<string> cmd = TrimCommandBuilder.Build(new VideoTrimOptions
+            {
+                Input = source, OutputPath = copyOut, Container = "mkv",
+                StartSeconds = 4.0, EndSeconds = 9.0, Mode = TrimMode.Copy,
+            }, srcBundle, 4.0, RotationPlan.Create(srcRotation, RotationMode.None, copying: true), ffmpeg);
+            Check("N31 无损命令含 -c copy", cmd.Contains("copy"));
+            Check("N32 命令含 -avoid_negative_ts make_zero（防音频整段前移）",
+                  cmd.Contains("-avoid_negative_ts") && cmd.Contains("make_zero"));
+            Check("N33 命令不继承原视频章节", cmd.Contains("-map_chapters"));
+            Check("N34 -ss 位于 -i 之前（输入侧快速定位）",
+                  cmd.IndexOf("-ss") < cmd.IndexOf("-i"), string.Join(" ", cmd));
+
+            List<string> preciseCmd = TrimCommandBuilder.Build(new VideoTrimOptions
+            {
+                Input = source, OutputPath = preciseOut, Container = "mkv",
+                StartSeconds = 5.3, EndSeconds = 9.0, Mode = TrimMode.Precise,
+            }, srcBundle, 5.3, RotationPlan.Create(0, RotationMode.None, copying: false), ffmpeg);
+            Check("N35 精确命令同时重编码音频（音频 copy 会造成错位）",
+                  preciseCmd.Contains("-c:a"), string.Join(" ", preciseCmd));
+            Check("N36 精确命令不使用 -c copy", !preciseCmd.Contains("copy"));
         }
         finally
         {

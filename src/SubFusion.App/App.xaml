@@ -17,11 +17,13 @@
             <converters:StateTagToBrushConverter x:Key="StateTagToBrush" />
             <converters:TaskStateToBrushConverter x:Key="TaskStateToBrush" />
             <converters:BoolToVisibilityConverter x:Key="BoolToVisible" />
-            <converters:EmptyToVisibilityConverter x:Key="EmptyToVisible" />
             <converters:NotEmptyToBoolConverter x:Key="NotEmptyToBool" />
+            <converters:NotEmptyToVisibleConverter x:Key="NotEmptyToVisible" />
             <converters:BoolToGlyphConverter x:Key="BoolToGlyph" />
             <converters:BoolToInfoBarSeverityConverter x:Key="BoolToSeverity" />
-    <converters:LossyToBrushConverter x:Key="LossyToBrush" />
+            <converters:LossyToBrushConverter x:Key="LossyToBrush" />
+            <converters:BytesToImageConverter x:Key="BytesToImage" />
+            <converters:ResultOkToSeverityConverter x:Key="ResultOkToSeverity" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

@@ -31,6 +31,7 @@ public sealed partial class ShellViewModel : ObservableObject
 
         Subtitle = new SubtitleViewModel(ui, settings, tasks);
         Merge = new VideoMergeViewModel(ui, settings, tasks);
+        Trim = new VideoTrimViewModel(ui, settings, tasks);
         TaskCenterPage = new TaskCenterViewModel(tasks, ui);
         Settings = new SettingsViewModel(settings, ui);
 
@@ -45,11 +46,10 @@ public sealed partial class ShellViewModel : ObservableObject
 
     public SubtitleViewModel Subtitle { get; }
     public VideoMergeViewModel Merge { get; }
+    public VideoTrimViewModel Trim { get; }
     public TaskCenterViewModel TaskCenterPage { get; }
     public SettingsViewModel Settings { get; }
 
-    /// <summary>当前页面类型；外壳窗口据此在 Frame 里导航（视图不由 ViewModel 创建）。</summary>
-    [ObservableProperty] private Type? currentPageType;
     [ObservableProperty] private string selectedTag = "subtitle";
     [ObservableProperty] private string header = "工作台";
 
@@ -65,13 +65,11 @@ public sealed partial class ShellViewModel : ObservableObject
 
     partial void OnThemeChanged(string value)
     {
-        if (string.Equals(_settings.Theme, value, StringComparison.Ordinal)) return; // 无变化不落盘、不广播
-        _settings.Theme = value;
+        // 主题可能来自设置页（此时 _settings.Theme 已被写过）或 Shell 自己：
+        // 两种来源都必须广播 ThemeChanged，否则设置页切换主题不会应用到可视树。
+        if (!string.Equals(_settings.Theme, value, StringComparison.Ordinal)) _settings.Theme = value;
         ThemeChanged?.Invoke(this, value);
-        OnPropertyChanged(nameof(ThemeLabel));
     }
-
-    public string ThemeLabel => ThemeService.ToLabel(Theme);
 
     #endregion
 
@@ -81,8 +79,6 @@ public sealed partial class ShellViewModel : ObservableObject
     [ObservableProperty] private string taskSummary = "没有任务";
     [ObservableProperty] private string toolText = "正在检测 ffmpeg…";
     [ObservableProperty] private bool toolReady;
-
-    public string WindowTitle => $"{Constants.AppName} v{Constants.AppVersion}";
 
     /// <summary>
     /// 刷新状态栏文字。进度条不在状态栏：它属于各工作区的内容区（页面内已有），
@@ -107,6 +103,7 @@ public sealed partial class ShellViewModel : ObservableObject
     {
         ["subtitle"] = "字幕合并",
         ["merge"] = "视频合并",
+        ["trim"] = "视频裁剪",
         ["tasks"] = "任务中心",
         ["settings"] = "设置",
     };
@@ -121,14 +118,6 @@ public sealed partial class ShellViewModel : ObservableObject
         if (!PageTitles.ContainsKey(key)) key = "subtitle";
         SelectedTag = key;
         Header = PageTitles[key];
-        CurrentPageType = key switch
-        {
-            "subtitle" => typeof(Pages.SubtitlePage),
-            "merge" => typeof(Pages.MergePage),
-            "tasks" => typeof(Pages.TaskCenterPage),
-            "settings" => typeof(Pages.SettingsPage),
-            _ => typeof(Pages.SubtitlePage),
-        };
         if (key == "tasks") TaskCenterPage.Refresh();
         NavigationRequested?.Invoke(this, key);
     }
@@ -141,13 +130,11 @@ public sealed partial class ShellViewModel : ObservableObject
     {
         Subtitle.Initialize();
         Merge.Initialize();
+        Trim.Initialize();
         RefreshStatusBar();
         Navigate(initialTag);
         _ = RequestDetectToolsAsync();
     }
-
-    /// <summary>定位 ffmpeg/ffprobe 并探测能力；结果同时送给工作台、设置页与两个业务页。</summary>
-    public Task DetectToolsAsync() => RequestDetectToolsAsync();
 
     private async Task RequestDetectToolsAsync()
     {
@@ -163,12 +150,14 @@ public sealed partial class ShellViewModel : ObservableObject
 
     private async Task RunDetectSerializedAsync(Task previous, CancellationToken token)
     {
-        try { await previous.ConfigureAwait(false); } catch { /* ignore previous failure */ }
-        await _detectGate.WaitAsync(token).ConfigureAwait(false);
+        // 这里不能 ConfigureAwait(false)：后续 DetectToolsCoreAsync 会写 ToolText / ToolReady /
+        // Settings.ToolStatusText 这些可观察属性，它们必须在 UI 线程赋值，否则绑定收不到通知。
+        try { await previous; } catch { /* 上一次探测的失败不影响本次 */ }
+        await _detectGate.WaitAsync(token);
         try
         {
             token.ThrowIfCancellationRequested();
-            await DetectToolsCoreAsync(token).ConfigureAwait(false);
+            await DetectToolsCoreAsync(token);
         }
         finally { _detectGate.Release(); }
     }
@@ -195,7 +184,7 @@ public sealed partial class ShellViewModel : ObservableObject
             ToolText = "ffmpeg 未找到";
             ToolReady = false;
             StatusText = "未找到 ffmpeg：请在「设置 → 媒体工具」中指定路径";
-            Subtitle.ApplyToolStatus("ffmpeg", "未找到 ffmpeg", false);
+            Subtitle.ApplyToolStatus("未找到 ffmpeg", false);
             Settings.ApplyToolStatus("未找到 ffmpeg", false, "");
             return; // tool paths unchanged; no need to rebuild merge task
         }
@@ -211,7 +200,7 @@ public sealed partial class ShellViewModel : ObservableObject
         ToolReady = true;
         ToolText = "ffmpeg 已就绪";
         StatusText = "就绪";
-        Subtitle.ApplyToolStatus("ffmpeg", versionShort, true);
+        Subtitle.ApplyToolStatus(versionShort, true);
         Subtitle.ApplyCapabilities(capabilities);
         // Rebuild Core task only when the tool paths actually changed.
         if (ffmpeg != _lastMergeFfmpeg || ffprobe != _lastMergeFfprobe)
@@ -219,6 +208,7 @@ public sealed partial class ShellViewModel : ObservableObject
             _lastMergeFfmpeg = ffmpeg;
             _lastMergeFfprobe = ffprobe;
             Merge.InvalidateTools();
+            Trim.InvalidateTools();
         }
 
         var missing = new List<string>();
@@ -240,9 +230,9 @@ public sealed partial class ShellViewModel : ObservableObject
     private void OnSettingsChanged()
     {
         Theme = _settings.Theme;
-        OnPropertyChanged(nameof(ThemeLabel));
         Subtitle.ReloadFromSettings();
         Merge.Initialize();
+        Trim.Initialize();
     }
 
     [RelayCommand]
@@ -268,14 +258,14 @@ public sealed partial class ShellViewModel : ObservableObject
     {
         if (!await Subtitle.ConfirmCloseAsync()) return false;
         Merge.Shutdown();
+        Trim.Shutdown();
         Subtitle.Shutdown();
         Subtitle.ApplyToSettings();
         Merge.ApplyToSettings();
+        Trim.ApplyToSettings();
         _settings.Save();
         return true;
     }
-
-    public void SetStatus(string text) => StatusText = text;
 
     #endregion
 }

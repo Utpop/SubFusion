@@ -81,7 +81,6 @@ public sealed class MergePlan
             : maxChannels >= 6 ? "5.1" : maxChannels >= 2 ? "stereo" : "mono";
 
         bool audioCopy = streamCopy && options.Audio != AudioStrategy.Reencode && audios.Count > 0;
-        if (options.Audio == AudioStrategy.Copy && streamCopy) audioCopy = audios.Count > 0;
 
         // 用户没指定时，按输入编码选择同族编码器：
         // 同一批素材重编码后仍保持同一编码，输出才能与未重编码的段一致，
@@ -191,6 +190,12 @@ public sealed class MergePlan
         // streamCopy 传 false，因为这里要拿到完整的重编码参数。
         MergePlan referencePlan = Create(options, referenceBundles, streamCopy: false, capabilities);
 
+        // HDR / 位深必须按全部输入判定，不能只看保留段：
+        // 若多数派是 SDR 而重编码的少数派是 HDR，referencePlan 会得到 SDR 的
+        // yuv420p + TonemapToSdr=false，但 ColorMetadataFilter 仍给少数派打 bt2020/PQ 标记，
+        // 产出 8bit 却标 HDR 的非法流。用 allBundles 重算这两个字段。
+        MergePlan allPlan = Create(options, allBundles, streamCopy: false, capabilities);
+
         // 章节与预期流数量仍按全部输入计算；其余编码参数保持不变。
         var plan = new MergePlan
         {
@@ -206,9 +211,9 @@ public sealed class MergePlan
             VideoCodecOutputName = referencePlan.VideoCodecOutputName,
             Crf = referencePlan.Crf,
             Preset = referencePlan.Preset,
-            PixelFormat = referencePlan.PixelFormat,
+            PixelFormat = allPlan.PixelFormat,
             TargetSar = referencePlan.TargetSar,
-            TonemapToSdr = referencePlan.TonemapToSdr,
+            TonemapToSdr = allPlan.TonemapToSdr,
             AudioCodec = referencePlan.AudioCodec,
             AudioBitrateKbps = referencePlan.AudioBitrateKbps,
             SampleRate = referencePlan.SampleRate,

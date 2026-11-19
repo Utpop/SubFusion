@@ -71,9 +71,11 @@ public static class ProcessUtil
             {
                 Task waitTask = process.WaitForExitAsync(cancellationToken);
                 Observe(waitTask);
-                Task timeoutTask = Task.Delay(TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
+                // 超时计时器不能绑定 cancellationToken：取消时它会变成 Canceled 状态，
+                // Task.WhenAny 同样会返回它，导致干净取消被误报成 TimedOut。
+                Task timeoutTask = Task.Delay(TimeSpan.FromSeconds(timeoutSeconds), CancellationToken.None);
                 Task winner = await Task.WhenAny(waitTask, timeoutTask).ConfigureAwait(false);
-                if (winner == timeoutTask)
+                if (winner == timeoutTask && !cancellationToken.IsCancellationRequested)
                 {
                     KillTree(process);
                     await SettleAsync(waitTask, stdoutTask, stderrTask).ConfigureAwait(false);

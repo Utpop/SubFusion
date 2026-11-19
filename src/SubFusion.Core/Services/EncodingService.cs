@@ -70,8 +70,11 @@ public static class EncodingService
 
         if (cjk != 0)
         {
-            int simp = Constants.CommonSimplified.Count(ch => sample.IndexOf(ch) >= 0);
-            int trad = Constants.CommonTraditional.Count(ch => sample.IndexOf(ch) >= 0);
+            // 原写法对每个候选编码(约 6 种)都做 4000 字符 × 上千字符表的 O(N*M) 扫描；
+            // 用预构建的 HashSet 把每次查询降到 O(1)。
+            var present = new HashSet<char>(sample);
+            int simp = Constants.CommonSimplified.Count(present.Contains);
+            int trad = Constants.CommonTraditional.Count(present.Contains);
             if (encoding == "gb18030") score += simp * 0.6 - trad * 0.25;
             else if (encoding == "big5") score += trad * 0.6 - simp * 0.25;
             else if (encoding is "shift_jis" or "euc-jp") score += kana * 0.5;
@@ -160,21 +163,23 @@ public static class EncodingService
         {
             try
             {
-                byte[] bigger;
-                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                // 分块有界扫描：只在遇到第一个非 ASCII 字节时停止，避免为大字幕整文件分配 byte[]。
+                // 上限 4MB——足以越过字幕头部大段 ASCII 说明，又不会让内存随文件大小增长。
+                const int maxExtended = 4 * 1024 * 1024;
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                var extended = new List<byte>(Math.Min((int)Math.Min(fileLength, maxExtended), 1 << 20));
+                extended.AddRange(raw);
+                var chunk = new byte[64 * 1024];
+                while (extended.Count < maxExtended)
                 {
-                    bigger = new byte[fs.Length];
-                    int total = 0;
-                    while (total < bigger.Length)
-                    {
-                        int n = fs.Read(bigger, total, bigger.Length - total);
-                        if (n == 0) break;
-                        total += n;
-                    }
-                    if (total != bigger.Length) Array.Resize(ref bigger, total);
+                    int n = fs.Read(chunk, 0, (int)Math.Min(chunk.Length, maxExtended - extended.Count));
+                    if (n == 0) break;
+                    bool nonAscii = false;
+                    for (int k = 0; k < n; k++) if (chunk[k] >= 0x80) { nonAscii = true; break; }
+                    extended.AddRange(new ArraySegment<byte>(chunk, 0, n));
+                    if (nonAscii) break;   // 找到非 ASCII 即可交给 DetectFromBytes 判定
                 }
-                if (bigger.Length > raw.Length && !bigger.All(b => b < 0x80))
-                    raw = bigger;
+                if (extended.Count > raw.Length) raw = extended.ToArray();
             }
             catch { /* 扩大采样失败则沿用原采样 */ }
         }

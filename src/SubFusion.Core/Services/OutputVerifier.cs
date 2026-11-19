@@ -45,22 +45,36 @@ public static class OutputVerifier
     /// </summary>
     /// <returns>错误描述列表；空列表表示全片可完整解码。</returns>
     public static async Task<List<string>> CheckFullDecodeAsync(string? ffmpeg, string path,
-                                                               int timeoutSeconds = 1800)
+                                                               int timeoutSeconds = 1800,
+                                                               double knownDuration = 0,
+                                                               Action<double>? onProgress = null)
     {
         var issues = new List<string>();
         if (string.IsNullOrEmpty(ffmpeg)) return issues;
         if (!File.Exists(path)) { issues.Add("输出文件不存在"); return issues; }
 
+        // 全片解码是整条校验链里最慢的一步（与素材时长线性相关，几十 GB 要十几分钟），
+        // 所以它必须能报告进度。否则界面会在「正在收尾… 99%」上静止十几分钟，
+        // 与卡死无法区分——这正是用户实际反馈过的现象。
+        // 走 FfmpegRunner 而不是 ProcessUtil，是因为只有它会解析 -progress 管道；
+        // 它同时把 stderr 收集下来，判断逻辑与原来一致。
         var args = new List<string>
         {
-            "-hide_banner", "-loglevel", "error", "-nostdin",
+            "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1",
             "-i", path, "-f", "null", "-",
         };
 
-        ProcessCapture proc;
+        var logLines = new List<string>();
+        int exitCode;
+        string stderrText;
         try
         {
-            proc = await ProcessUtil.RunAsync(ffmpeg, args, timeoutSeconds).ConfigureAwait(false);
+            (exitCode, stderrText) = await FfmpegRunner.RunFfmpegAsync(
+                new[] { ffmpeg }.Concat(args).ToList(),
+                knownDuration > 0 ? knownDuration : null,
+                onProgress is null ? null : (percent, _, _) => onProgress(percent / 100.0),
+                CancellationToken.None,
+                logLines, 400).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -69,17 +83,19 @@ public static class OutputVerifier
             return issues;
         }
 
-        if (proc.TimedOut)
+        string errText = stderrText.Trim();
+
+        // FfmpegRunner 在超时/无法启动时返回 -1；能跑完的 ffmpeg 不会返回 -1。
+        if (exitCode == -1)
         {
-            issues.Add("全片解码校验超时，未能证明输出完好");
+            issues.Add("全片解码校验未能完成：" + (errText.Length > 0 ? errText : "进程异常退出"));
             return issues;
         }
 
-        string errText = proc.Stderr.Trim();
-        if (proc.ExitCode != 0)
+        if (exitCode != 0)
         {
             string first = errText.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0) ?? "";
-            issues.Add("全片解码失败（退出码 " + proc.ExitCode + "）" +
+            issues.Add("全片解码失败（退出码 " + exitCode + "）" +
                        (first.Length > 0 ? "：" + first : ""));
             return issues;
         }
@@ -191,6 +207,165 @@ public static class OutputVerifier
             issues.Add(string.Format(CultureInfo.InvariantCulture,
                 "输出时长与各段之和不符（期望约 {0:F2}s，实际 {1:F2}s，相差 {2:F2}s，容差 {3:F2}s），" +
                 "说明有片段被丢弃或时间轴错位", expectedSeconds, actualSeconds, delta, tolerance));
+        return issues;
+    }
+
+    /// <summary>
+    /// 内容终点检查：声明的时长在后面是否真有数据。
+    ///
+    /// 这是头尾抽样之外必须补上的一环。头尾抽样只解码「结尾 2 秒」，
+    /// 它判断的是「解码器报不报错」——遇到尾部数据根本不存在时，ffmpeg 是
+    /// 安静地什么都不解码然后返回 0，于是抽样"通过"，文件却被判为完好。
+    /// 实测：一段声明 40 秒、实际只有 21 秒数据的 mp4，头尾抽样零告警。
+    ///
+    /// 这里改成看「解出来多少内容」：从声明终点往前开一个窗口解码，
+    /// 窗口内必须真的产出接近窗口长度的内容，否则说明后面是空的。
+    /// 代价只有一次 ffmpeg 启动（数百毫秒），比全片解码便宜得多，
+    /// 却能把「容器说有这么长、数据却早断了」这类静默损坏拦下来。
+    /// </summary>
+    /// <returns>错误描述列表；空列表表示声明时长有数据支撑。</returns>
+    public static async Task<List<string>> CheckContentEndAsync(string? ffmpeg, string path,
+                                                                double declaredSeconds,
+                                                                int timeoutSeconds = 120)
+    {
+        var issues = new List<string>();
+        if (string.IsNullOrEmpty(ffmpeg)) return issues;
+        if (!File.Exists(path)) { issues.Add("输出文件不存在"); return issues; }
+        if (declaredSeconds <= 0) return issues;
+
+        // 窗口取 1% 封顶 4 秒：长素材不必解 10 秒去证明一件事，短素材也不至于只剩几帧。
+        double window = Math.Clamp(declaredSeconds * 0.01, 1.0, 4.0);
+        double from = Math.Max(0, declaredSeconds - window);
+        // 窗口末尾要给解码器留出收尾空间，否则分不清「数据没了」与「差最后两帧」。
+        double accept = window * 0.75;
+
+        var args = new List<string>
+        {
+            "-hide_banner", "-nostats", "-loglevel", "error", "-nostdin",
+            "-ss", from.ToString("0.###", CultureInfo.InvariantCulture),
+            "-t", window.ToString("0.###", CultureInfo.InvariantCulture),
+            "-i", path,
+            // 问号 = 存在才解码；纯视频或纯音频文件都不会因此失败。
+            "-map", "0:v:0?", "-map", "0:a:0?",
+            "-f", "null", "-",
+            "-progress", "pipe:1",
+        };
+
+        ProcessCapture proc;
+        try
+        {
+            proc = await ProcessUtil.RunAsync(ffmpeg, args, timeoutSeconds).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // 无法执行时不能假定没问题：这一项正是「敢不敢删源」的依据之一。
+            issues.Add("内容终点校验无法执行：" + ex.Message);
+            return issues;
+        }
+        if (proc.TimedOut)
+        {
+            issues.Add("内容终点校验超时，未能证明输出完整");
+            return issues;
+        }
+
+        double produced = 0;
+        foreach (string raw in proc.Stdout.Split('\n'))
+        {
+            string line = raw.Trim();
+            if (!line.StartsWith("out_time_us=", StringComparison.Ordinal)) continue;
+            string value = line["out_time_us=".Length..].Trim();
+            if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long us) && us > 0)
+                produced = Math.Max(produced, us / 1_000_000.0);
+        }
+
+        if (produced < accept)
+        {
+            issues.Add(string.Format(CultureInfo.InvariantCulture,
+                "输出在 {0:F2}s 之后没有可解码的内容（声明时长 {1:F2}s，该区间只解出 {2:F2}s，" +
+                "说明文件尾部被截断或时间轴被压缩）", from, declaredSeconds, produced));
+        }
+        return issues;
+    }
+
+    /// <summary>
+    /// 全片抽样解码：沿整条时间轴均匀取若干窗口各解一小段。
+    ///
+    /// 这是「删源前全片解码」的替代方案。原来那一步对整个输出逐帧解码，
+    /// 耗时与时长线性相关 —— 36 分钟的片子实测要 116 秒，2 小时的片子要十几分钟，
+    /// 而这段时间界面在收尾阶段完全静止，看起来就是卡死。
+    ///
+    /// 为什么抽样在这里是合理的：真正的损坏几乎只出现在<b>拼接接缝</b>上，
+    /// 而接缝在拼接完成后已经逐个定点解码验过（<see cref="CheckSeamsAsync"/>）。
+    /// 全片解码多出来的价值只是「碰巧解到别处的偶发损坏」，
+    /// 均匀抽样以固定代价覆盖整条时间轴，命中概率远高于只验接缝，
+    /// 代价却与素材时长基本无关。
+    ///
+    /// 必须说清楚的是：抽样是<b>采样</b>，不是证明。它降低风险，不消除风险。
+    /// 因此这一步还配了一条更强的证据——文件字节数必须与校验通过时的临时文件一致，
+    /// 那能确定性地排除「复制过程写坏了/写短了」这一整类问题。
+    /// </summary>
+    /// <param name="durationSeconds">输出时长；&lt;= 0 时退回只查头尾。</param>
+    /// <param name="timeoutSeconds">单窗口解码超时。</param>
+    public static async Task<List<string>> CheckSampledDecodeAsync(string? ffmpeg, string path,
+                                                                   double durationSeconds,
+                                                                   int timeoutSeconds = 60)
+    {
+        var issues = new List<string>();
+        if (string.IsNullOrEmpty(ffmpeg)) return issues;
+        if (!File.Exists(path)) { issues.Add("输出文件不存在"); return issues; }
+        if (durationSeconds <= 0)
+            return await CheckIntegrityAsync(ffmpeg, path, timeoutSeconds).ConfigureAwait(false);
+
+        // 抽样点数量：每约两分钟一个，至少 6 个、最多 16 个。
+        // 上限存在的意义是「代价封顶」：4 小时的片子和 40 分钟的片子，
+        // 这一步都只花几秒，而原来的全片解码要差出 6 倍时间。
+        int count = Math.Clamp((int)(durationSeconds / 120.0), 6, 16);
+        // 窗口 1 秒：短到便宜，长到足以跨过一个 GOP 的参考帧依赖。
+        const double window = 1.0;
+
+        for (int i = 0; i < count; i++)
+        {
+            // 均匀铺开且避开首尾各 1%：头尾已有专门的检查覆盖。
+            double ratio = count == 1 ? 0.5 : (i + 0.5) / count;
+            double at = Math.Clamp(durationSeconds * ratio, 0, Math.Max(0, durationSeconds - window));
+
+            var args = new List<string>
+            {
+                "-hide_banner", "-loglevel", "error", "-nostdin",
+                "-ss", at.ToString("0.###", CultureInfo.InvariantCulture),
+                "-t", window.ToString("0.##", CultureInfo.InvariantCulture),
+                "-i", path,
+                "-map", "0:v:0?", "-map", "0:a:0?",
+                "-f", "null", "-",
+            };
+
+            ProcessCapture proc;
+            try
+            {
+                proc = await ProcessUtil.RunAsync(ffmpeg, args, timeoutSeconds).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                issues.Add(string.Format(CultureInfo.InvariantCulture,
+                    "抽样校验在 {0:0.##}s 处无法执行：{1}", at, ex.Message));
+                return issues;   // 无法执行不能假定没问题
+            }
+            if (proc.TimedOut)
+            {
+                issues.Add(string.Format(CultureInfo.InvariantCulture,
+                    "抽样校验在 {0:0.##}s 处超时，未能证明该处完好", at));
+                return issues;
+            }
+
+            string[] lines = DecodeErrorLines(proc.Stderr);
+            if (proc.ExitCode != 0 || lines.Length > 0)
+            {
+                string sample = lines.Length > 0 ? lines[0] : ("退出码 " + proc.ExitCode);
+                if (sample.Length > 80) sample = sample[..80];
+                issues.Add(string.Format(CultureInfo.InvariantCulture,
+                    "抽样点 {0:0.##}s 处解码出错：{1}", at, sample));
+            }
+        }
         return issues;
     }
 
