@@ -247,6 +247,9 @@ public sealed class TechLabelConverter : IValueConverter
             ["Stretch"] = "直接拉满（画面可能变形）",
             ["Auto"] = "自动（能不重编码就不重编码·推荐）",
             ["Reencode"] = "统一重新编码",
+            ["speed"] = "偏速度（快·文件大一些）",
+            ["balanced"] = "均衡（推荐）",
+            ["quality"] = "偏画质（慢·文件小一些）",
         };
 
     public object Convert(object value, Type targetType, object parameter, string language)

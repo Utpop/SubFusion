@@ -176,6 +176,52 @@ public sealed class AppSettings
 
     #endregion
 
+    #region 视频压制默认值
+
+    private string _compressContainer = "mp4";
+    public string CompressContainer { get => _compressContainer; set => SetValue(ref _compressContainer, value); }
+    /// <summary>"H264"（默认）或 "Hevc"。</summary>
+    private string _compressCodec = "H264";
+    public string CompressCodec { get => _compressCodec; set => SetValue(ref _compressCodec, value); }
+    /// <summary>"auto"（有显卡就用显卡，默认）/ "hardware" / "software"。</summary>
+    private string _compressEncoder = "auto";
+    public string CompressEncoder { get => _compressEncoder; set => SetValue(ref _compressEncoder, value); }
+    /// <summary>限定的硬件后端："" 表示不限，"Amf" / "Nvenc" / "Qsv"。</summary>
+    private string _compressBackend = "";
+    public string CompressBackend { get => _compressBackend; set => SetValue(ref _compressBackend, value); }
+    /// <summary>硬件编码质量档："balanced"（默认）/ "speed" / "quality"。</summary>
+    private string _compressHardwareQuality = "balanced";
+    public string CompressHardwareQuality { get => _compressHardwareQuality; set => SetValue(ref _compressHardwareQuality, value); }
+    /// <summary>画质档（CRF 语义，越小越清晰）。</summary>
+    private double _compressQuality = 23;
+    public double CompressQuality { get => _compressQuality; set => SetValue(ref _compressQuality, value); }
+    private string _compressRateControl = "Quality";
+    public string CompressRateControl { get => _compressRateControl; set => SetValue(ref _compressRateControl, value); }
+    private double _compressBitrateKbps = 2500;
+    public double CompressBitrateKbps { get => _compressBitrateKbps; set => SetValue(ref _compressBitrateKbps, value); }
+    private string _compressPreset = "medium";
+    public string CompressPreset { get => _compressPreset; set => SetValue(ref _compressPreset, value); }
+    /// <summary>分辨率处理："None" / "LongEdge" / "Fit" / "Scale"。</summary>
+    private string _compressResize = "None";
+    public string CompressResize { get => _compressResize; set => SetValue(ref _compressResize, value); }
+    /// <summary>"原样" / "1080" / "720" / "480" / "2160"。</summary>
+    private string _compressLongEdge = "1080";
+    public string CompressLongEdge { get => _compressLongEdge; set => SetValue(ref _compressLongEdge, value); }
+    private double _compressFrameRate;
+    public double CompressFrameRate { get => _compressFrameRate; set => SetValue(ref _compressFrameRate, value); }
+    private bool _compressReencodeAudio = true;
+    public bool CompressReencodeAudio { get => _compressReencodeAudio; set => SetValue(ref _compressReencodeAudio, value); }
+    private double _compressAudioBitrate = 192;
+    public double CompressAudioBitrate { get => _compressAudioBitrate; set => SetValue(ref _compressAudioBitrate, value); }
+    private bool _compressHardwareDecode = true;
+    public bool CompressHardwareDecode { get => _compressHardwareDecode; set => SetValue(ref _compressHardwareDecode, value); }
+    private bool _compressVerify = true;
+    public bool CompressVerify { get => _compressVerify; set => SetValue(ref _compressVerify, value); }
+    private string _compressOutputDir = "";
+    public string CompressOutputDir { get => _compressOutputDir; set => SetValue(ref _compressOutputDir, value); }
+
+    #endregion
+
     #region 会话态
 
     /// <summary>上一次使用的目录，仅用于文件对话框的默认位置提示；赋值即持久化。</summary>
@@ -241,6 +287,27 @@ public sealed class AppSettings
                 "ultrafast", "veryfast", "fast", "medium", "slow", "veryslow");
             TrimVerify = Bool("trim_verify", true);
             TrimOutputDir = Read("trim_outdir") ?? "";
+
+            CompressContainer = OneOf(Read("compress_container"), "mp4", "mp4", "mkv");
+            CompressCodec = OneOf(Read("compress_codec"), "H264", "H264", "Hevc");
+            CompressEncoder = OneOf(Read("compress_encoder"), "auto", "auto", "hardware", "software");
+            CompressBackend = OneOf(Read("compress_backend"), "", "", "Amf", "Nvenc", "Qsv");
+            CompressHardwareQuality = OneOf(Read("compress_hw_quality"), "balanced",
+                "balanced", "speed", "quality");
+            CompressQuality = Number(Read("compress_quality"), 23);
+            CompressRateControl = OneOf(Read("compress_rate_control"), "Quality", "Quality", "Bitrate");
+            CompressBitrateKbps = Number(Read("compress_bitrate"), 2500);
+            CompressPreset = OneOf(Read("compress_preset"), "medium",
+                "ultrafast", "veryfast", "fast", "medium", "slow", "veryslow");
+            CompressResize = OneOf(Read("compress_resize"), "None", "None", "LongEdge", "Fit", "Scale");
+            CompressLongEdge = OneOf(Read("compress_long_edge"), "1080",
+                "2160", "1440", "1080", "720", "480", "360");
+            CompressFrameRate = Number(Read("compress_fps"), 0);
+            CompressReencodeAudio = Bool("compress_reencode_audio", true);
+            CompressAudioBitrate = Number(Read("compress_audio_bitrate"), 192);
+            CompressHardwareDecode = Bool("compress_hw_decode", true);
+            CompressVerify = Bool("compress_verify", true);
+            CompressOutputDir = Read("compress_outdir") ?? "";
 
             LastDir = Read("last_dir") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             if (LastDir.Length == 0)
@@ -310,6 +377,24 @@ public sealed class AppSettings
                 _config.Set("trim_preset", TrimPreset);
                 _config.Set("trim_verify", TrimVerify);
                 _config.Set("trim_outdir", TrimOutputDir);
+
+                _config.Set("compress_container", CompressContainer);
+                _config.Set("compress_codec", CompressCodec);
+                _config.Set("compress_encoder", CompressEncoder);
+                _config.Set("compress_backend", CompressBackend);
+                _config.Set("compress_hw_quality", CompressHardwareQuality);
+                _config.Set("compress_quality", ((int)CompressQuality).ToString(CultureInfo.InvariantCulture));
+                _config.Set("compress_rate_control", CompressRateControl);
+                _config.Set("compress_bitrate", ((int)CompressBitrateKbps).ToString(CultureInfo.InvariantCulture));
+                _config.Set("compress_preset", CompressPreset);
+                _config.Set("compress_resize", CompressResize);
+                _config.Set("compress_long_edge", CompressLongEdge);
+                _config.Set("compress_fps", ((int)CompressFrameRate).ToString(CultureInfo.InvariantCulture));
+                _config.Set("compress_reencode_audio", CompressReencodeAudio);
+                _config.Set("compress_audio_bitrate", ((int)CompressAudioBitrate).ToString(CultureInfo.InvariantCulture));
+                _config.Set("compress_hw_decode", CompressHardwareDecode);
+                _config.Set("compress_verify", CompressVerify);
+                _config.Set("compress_outdir", CompressOutputDir);
 
                 _config.Set("last_dir", LastDir);
 

@@ -1,0 +1,399 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="SubFusion.App.Pages.CompressPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <!-- 允许把视频直接拖进本页：拖放是压制最自然的入口 -->
+    <Grid Padding="{StaticResource PagePadding}" RowSpacing="12" AllowDrop="True"
+          DragOver="Page_DragOver" Drop="Page_Drop">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+
+        <!-- ==================== 页头 ==================== -->
+        <Grid Grid.Row="0" Grid.ColumnSpan="2" RowSpacing="8">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="2">
+                    <TextBlock Text="视频压制" Style="{StaticResource PageTitleStyle}" />
+                    <TextBlock Style="{StaticResource PageSubtitleStyle}"
+                               Text="把视频重新压一遍以减小体积。有显卡时会自动用显卡编码（本机检测到 AMD 显卡时走 AMF），压缩速度通常是 CPU 编码的数倍；最终用了哪个编码器会如实写在下方和任务详情里。" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <ProgressRing IsActive="{x:Bind ViewModel.Analyzing, Mode=OneWay}" Width="18" Height="18" />
+                </StackPanel>
+            </Grid>
+
+            <CommandBar Grid.Row="1" DefaultLabelPosition="Right" IsDynamicOverflowEnabled="True"
+                        OverflowButtonVisibility="Auto" Background="Transparent" Padding="0">
+                <AppBarButton Label="选择视频" Command="{x:Bind ViewModel.ChooseInputCommand}">
+                    <AppBarButton.Icon><FontIcon Glyph="&#xE8E5;"/></AppBarButton.Icon>
+                </AppBarButton>
+                <AppBarSeparator />
+                <AppBarButton Label="输出目录" Command="{x:Bind ViewModel.ChooseOutputDirectoryCommand}">
+                    <AppBarButton.Icon><FontIcon Glyph="&#xE8B7;"/></AppBarButton.Icon>
+                </AppBarButton>
+                <AppBarButton Label="打开输出目录" Command="{x:Bind ViewModel.OpenOutputFolderCommand}">
+                    <AppBarButton.Icon><FontIcon Glyph="&#xE838;"/></AppBarButton.Icon>
+                </AppBarButton>
+            </CommandBar>
+        </Grid>
+
+        <!-- ==================== 左：素材与计划 ==================== -->
+        <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource CardStyle}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" VerticalScrollMode="Auto"
+                          HorizontalScrollMode="Disabled">
+                <StackPanel Spacing="12">
+
+                    <!-- 已选文件 -->
+                    <Grid ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Glyph="&#xE714;" FontSize="20" VerticalAlignment="Top" Margin="0,2,0,0"
+                                  Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <StackPanel Grid.Column="1" Spacing="4">
+                            <TextBlock Text="{x:Bind ViewModel.InputName, Mode=OneWay}" FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTipService.ToolTip="{x:Bind ViewModel.InputPath, Mode=OneWay}" />
+                            <TextBlock Text="{x:Bind ViewModel.MediaInfoText, Mode=OneWay}"
+                                       Style="{StaticResource CaptionStyle}"
+                                       Visibility="{x:Bind ViewModel.MediaInfoText, Mode=OneWay, Converter={StaticResource NotEmptyToVisible}}" />
+                            <TextBlock Text="{x:Bind ViewModel.AnalysisError, Mode=OneWay}" FontSize="12"
+                                       Foreground="{ThemeResource StatusDangerBrush}" TextWrapping="Wrap"
+                                       Visibility="{x:Bind ViewModel.AnalysisError, Mode=OneWay, Converter={StaticResource NotEmptyToVisible}}" />
+                            <TextBlock Style="{StaticResource CaptionStyle}"
+                                       Text="把视频文件拖到窗口里，或点上方「选择视频」。"
+                                       Visibility="{x:Bind ViewModel.HasInput, Mode=OneWay, Converter={StaticResource BoolToVisible}, ConverterParameter=invert}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- 硬件加速状态：内容全部来自真实探测 -->
+                    <Border Style="{StaticResource SubtleSurfaceStyle}"
+                            Visibility="{x:Bind ViewModel.EncoderSummary, Mode=OneWay, Converter={StaticResource NotEmptyToVisible}}">
+                        <StackPanel Spacing="6">
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <FontIcon Glyph="&#xE945;" FontSize="14" VerticalAlignment="Center"
+                                          Foreground="{ThemeResource StatusInfoBrush}" />
+                                <TextBlock Grid.Column="1" Text="本机编码器（真实初始化检测）"
+                                           Style="{StaticResource FieldLabelStyle}" />
+                            </Grid>
+                            <TextBlock Text="{x:Bind ViewModel.EncoderSummary, Mode=OneWay}"
+                                       Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
+                                       FontFamily="Consolas" />
+                        </StackPanel>
+                    </Border>
+
+                    <InfoBar IsClosable="False" Severity="Warning" Title="硬件加速不可用"
+                             IsOpen="{x:Bind ViewModel.EncoderWarning, Mode=OneWay, Converter={StaticResource NotEmptyToBool}}"
+                             Message="{x:Bind ViewModel.EncoderWarning, Mode=OneWay}" />
+
+                    <!-- 计划：本次会用什么编码器、缩到多大、体积估计 -->
+                    <StackPanel Spacing="6"
+                                Visibility="{x:Bind ViewModel.HasPlan, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
+                        <TextBlock Text="本次压制计划" Style="{StaticResource FieldLabelStyle}" />
+                        <TextBlock Text="{x:Bind ViewModel.PlanText, Mode=OneWay}" FontWeight="SemiBold"
+                                   TextWrapping="Wrap" />
+                        <TextBlock Text="{x:Bind ViewModel.PlanDetail, Mode=OneWay}"
+                                   Style="{StaticResource CaptionStyle}" TextWrapping="Wrap" />
+                        <TextBlock Text="{x:Bind ViewModel.EstimateText, Mode=OneWay}"
+                                   Style="{StaticResource CaptionStyle}" TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <InfoBar IsClosable="False" Severity="Error" Title="无法开始压制"
+                             IsOpen="{x:Bind ViewModel.PlanError, Mode=OneWay, Converter={StaticResource NotEmptyToBool}}"
+                             Message="{x:Bind ViewModel.PlanError, Mode=OneWay}" />
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+
+        <!-- ==================== 右：参数 ==================== -->
+        <ScrollViewer Grid.Row="1" Grid.Column="1" Margin="12,0,0,0" Width="368"
+                      VerticalScrollBarVisibility="Auto" VerticalScrollMode="Auto"
+                      HorizontalScrollMode="Disabled">
+            <StackPanel Spacing="12">
+
+                <!-- 编码方式 -->
+                <Border Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="编码方式" Style="{StaticResource SectionTitleStyle}" />
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="编码格式" Style="{StaticResource FieldLabelStyle}" />
+                            <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.CodecOptions}"
+                                      DisplayMemberPath="Label"
+                                      SelectedItem="{x:Bind ViewModel.SelectedCodec, Mode=TwoWay}" />
+                            <TextBlock Text="{x:Bind ViewModel.CodecHint, Mode=OneWay}"
+                                       Style="{StaticResource CaptionStyle}" TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="用谁来编码" Style="{StaticResource FieldLabelStyle}" />
+                            <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.PreferenceOptions}"
+                                      DisplayMemberPath="Label"
+                                      SelectedItem="{x:Bind ViewModel.SelectedPreference, Mode=TwoWay}" />
+                            <TextBlock Text="{x:Bind ViewModel.PreferenceHint, Mode=OneWay}"
+                                       Style="{StaticResource CaptionStyle}" TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Spacing="4">
+                                <TextBlock Text="显卡品牌" Style="{StaticResource FieldLabelStyle}" />
+                                <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.BackendOptions}"
+                                          DisplayMemberPath="Label"
+                                          SelectedItem="{x:Bind ViewModel.SelectedBackend, Mode=TwoWay}"
+                                          IsEnabled="{x:Bind ViewModel.IsHardwareAllowed, Mode=OneWay}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Spacing="4">
+                                <TextBlock Text="显卡编码质量" Style="{StaticResource FieldLabelStyle}" />
+                                <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.HardwareQualities}"
+                                          SelectedItem="{x:Bind ViewModel.HardwareQuality, Mode=TwoWay}"
+                                          IsEnabled="{x:Bind ViewModel.IsHardwareAllowed, Mode=OneWay}" />
+                            </StackPanel>
+                        </Grid>
+                        <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
+                                   Text="显卡编码质量：越靠上的档位越快、文件越大；「quality」最慢但画面最好。硬件编码不接受 CPU 的「编码速度」参数，两者不能混用。" />
+
+                        <CheckBox Content="用显卡解码源视频" IsChecked="{x:Bind ViewModel.HardwareDecodeEnabled, Mode=TwoWay}"
+                                  IsEnabled="{x:Bind ViewModel.IsHardwareAllowed, Mode=OneWay}" />
+                        <TextBlock Text="{x:Bind ViewModel.HardwareDecodeText, Mode=OneWay}"
+                                   Style="{StaticResource CaptionStyle}" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+
+                <!-- 画质与体积 -->
+                <Border Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="画质与体积" Style="{StaticResource SectionTitleStyle}" />
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="怎么决定体积" Style="{StaticResource FieldLabelStyle}" />
+                            <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.RateOptions}"
+                                      DisplayMemberPath="Label"
+                                      SelectedItem="{x:Bind ViewModel.SelectedRate, Mode=TwoWay}" />
+                            <TextBlock Text="{x:Bind ViewModel.RateHint, Mode=OneWay}"
+                                       Style="{StaticResource CaptionStyle}" TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="4"
+                                    Visibility="{x:Bind ViewModel.IsQualityMode, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
+                            <TextBlock Text="画质档（越小越清晰、文件越大）" Style="{StaticResource FieldLabelStyle}" />
+                            <NumberBox Minimum="0" Maximum="51" SmallChange="1" SpinButtonPlacementMode="Compact"
+                                       Value="{x:Bind ViewModel.Quality, Mode=TwoWay}" />
+                            <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
+                                       Text="经验值：18 接近无损；23 画质与体积平衡（推荐）；28 明显省空间；32 以上细节会糊。" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="4"
+                                    Visibility="{x:Bind ViewModel.IsBitrateMode, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
+                            <TextBlock Text="目标码率（kbps）" Style="{StaticResource FieldLabelStyle}" />
+                            <NumberBox Minimum="100" Maximum="200000" SmallChange="100"
+                                       SpinButtonPlacementMode="Compact"
+                                       Value="{x:Bind ViewModel.BitrateKbps, Mode=TwoWay}" />
+                            <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
+                                       Text="1080p 常用 2000~6000，720p 常用 1000~3000。填太低会明显糊，填太高可能比原片还大。" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="4"
+                                    Visibility="{x:Bind ViewModel.IsSoftwareOnly, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
+                            <TextBlock Text="CPU 编码速度" Style="{StaticResource FieldLabelStyle}" />
+                            <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.Presets}"
+                                      SelectedItem="{x:Bind ViewModel.Preset, Mode=TwoWay}">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="x:String">
+                                        <TextBlock Text="{x:Bind Converter={StaticResource TechLabel}}" />
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- 画面与声音 -->
+                <Border Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="画面与声音" Style="{StaticResource SectionTitleStyle}" />
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="分辨率" Style="{StaticResource FieldLabelStyle}" />
+                            <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.ResizeOptions}"
+                                      DisplayMemberPath="Label"
+                                      SelectedItem="{x:Bind ViewModel.SelectedResize, Mode=TwoWay}" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="4"
+                                    Visibility="{x:Bind ViewModel.UsesLongEdge, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
+                            <TextBlock Text="目标长边" Style="{StaticResource FieldLabelStyle}" />
+                            <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.LongEdges}"
+                                      SelectedItem="{x:Bind ViewModel.LongEdge, Mode=TwoWay}" />
+                            <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
+                                       Text="只缩小不放大：源片比目标更小时保持原样。" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="4"
+                                    Visibility="{x:Bind ViewModel.UsesScaleFactor, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
+                            <TextBlock Text="缩小倍数" Style="{StaticResource FieldLabelStyle}" />
+                            <NumberBox Minimum="2" Maximum="8" SmallChange="1" SpinButtonPlacementMode="Compact"
+                                       Value="{x:Bind ViewModel.ScaleFactor, Mode=TwoWay}" />
+                            <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
+                                       Text="2 表示长宽各减半（4K → 1080p）。" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="帧率" Style="{StaticResource FieldLabelStyle}" />
+                            <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.FrameRates}"
+                                      SelectedItem="{x:Bind ViewModel.SelectedFrameRate, Mode=TwoWay}" />
+                            <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
+                                       Text="只降不升：源片帧率更低时保持原样，升帧只会让文件变大。" />
+                        </StackPanel>
+
+                        <CheckBox Content="重新编码音频" IsChecked="{x:Bind ViewModel.ReencodeAudio, Mode=TwoWay}" />
+                        <StackPanel Spacing="4"
+                                    Visibility="{x:Bind ViewModel.ReencodeAudio, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
+                            <TextBlock Text="音频码率（kbps）" Style="{StaticResource FieldLabelStyle}" />
+                            <NumberBox Minimum="32" Maximum="1024" SmallChange="32"
+                                       SpinButtonPlacementMode="Compact"
+                                       Value="{x:Bind ViewModel.AudioBitrate, Mode=TwoWay}" />
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
+                                   Text="关掉「重新编码音频」会原样复制音轨，音质完全不变且更快。注意 MP4 装不下某些音轨格式（程序会提前拦下并提示）。" />
+                    </StackPanel>
+                </Border>
+
+                <!-- 输出 -->
+                <Border Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="输出" Style="{StaticResource SectionTitleStyle}" />
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="输出格式" Style="{StaticResource FieldLabelStyle}" />
+                            <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.Containers}"
+                                      SelectedItem="{x:Bind ViewModel.Container, Mode=TwoWay}">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="x:String">
+                                        <TextBlock Text="{x:Bind Converter={StaticResource TechLabel}}" />
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="输出目录" Style="{StaticResource FieldLabelStyle}" />
+                            <Grid ColumnSpacing="6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox Text="{x:Bind ViewModel.OutputDirectory, Mode=TwoWay}"
+                                         PlaceholderText="选择输出目录" />
+                                <Button Grid.Column="1" Content="浏览" Style="{StaticResource ToolbarButtonStyle}"
+                                        Command="{x:Bind ViewModel.ChooseOutputDirectoryCommand}" />
+                            </Grid>
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="文件名" Style="{StaticResource FieldLabelStyle}" />
+                            <Grid ColumnSpacing="6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox Text="{x:Bind ViewModel.OutputName, Mode=TwoWay}"
+                                         PlaceholderText="video_compressed" />
+                                <Button Grid.Column="1" Content="另存为" Style="{StaticResource ToolbarButtonStyle}"
+                                        Command="{x:Bind ViewModel.ChooseOutputFileCommand}" />
+                            </Grid>
+                            <TextBlock Text="{x:Bind ViewModel.OutputPath, Mode=OneWay}"
+                                       Style="{StaticResource MonoTextStyle}"
+                                       ToolTipService.ToolTip="{x:Bind ViewModel.OutputPath, Mode=OneWay}" />
+                        </StackPanel>
+
+                        <CheckBox Content="目标已存在时覆盖" IsChecked="{x:Bind ViewModel.Overwrite, Mode=TwoWay}" />
+                        <CheckBox Content="做完后检查（时长、能否解码）"
+                                  IsChecked="{x:Bind ViewModel.VerifyOutput, Mode=TwoWay}"
+                                  ToolTipService.ToolTip="校验不通过时不会留下半成品文件" />
+                        <CheckBox Content="保留源字幕轨" IsChecked="{x:Bind ViewModel.KeepSubtitles, Mode=TwoWay}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- ==================== 底部操作栏 ==================== -->
+        <Border Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource CardStyle}" Padding="12">
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Button Content="开始压制" Style="{StaticResource AccentButtonStyle}" Padding="28,8"
+                        Command="{x:Bind ViewModel.StartCommand}" />
+                <Button Grid.Column="1" Content="取消" Command="{x:Bind ViewModel.CancelCommand}"
+                        IsEnabled="{x:Bind ViewModel.CanCancel, Mode=OneWay}" />
+
+                <StackPanel Grid.Column="2" Spacing="4">
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="{x:Bind ViewModel.StageText, Mode=OneWay}" FontWeight="SemiBold" FontSize="12" />
+                        <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.ProgressDetail, Mode=OneWay}"
+                                   Style="{StaticResource CaptionStyle}" TextTrimming="CharacterEllipsis" />
+                    </Grid>
+                    <ProgressBar Value="{x:Bind ViewModel.Progress, Mode=OneWay}" Maximum="100" Height="4"
+                                 IsIndeterminate="{x:Bind ViewModel.IsIndeterminate, Mode=OneWay}" />
+                    <Grid ColumnSpacing="12"
+                          Visibility="{x:Bind ViewModel.HasProgressInfo, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="{x:Bind ViewModel.ProgressText, Mode=OneWay}"
+                                   Style="{StaticResource CaptionStyle}" />
+                        <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.SpeedText, Mode=OneWay}"
+                                   Style="{StaticResource CaptionStyle}" />
+                        <TextBlock Grid.Column="2" Text="{x:Bind ViewModel.ActiveEncoderText, Mode=OneWay}"
+                                   Style="{StaticResource CaptionStyle}" />
+                        <TextBlock Grid.Column="3" Text="{x:Bind ViewModel.EtaText, Mode=OneWay}"
+                                   Style="{StaticResource CaptionStyle}" HorizontalAlignment="Right" />
+                    </Grid>
+                    <InfoBar IsClosable="False"
+                             IsOpen="{x:Bind ViewModel.HasResult, Mode=OneWay}"
+                             Severity="{x:Bind ViewModel.ResultOk, Mode=OneWay, Converter={StaticResource ResultOkToSeverity}}"
+                             Message="{x:Bind ViewModel.ResultText, Mode=OneWay}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Page>

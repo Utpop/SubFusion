@@ -41,7 +41,7 @@
             </Grid.ColumnDefinitions>
 
             <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                <Image Source="ms-appx:///Assets/app.ico" Width="16" Height="16" />
+                <Image Source="ms-appx:///Assets/app-icon.png" Width="16" Height="16" />
                 <TextBlock Text="SubFusion" FontSize="12" FontWeight="SemiBold"
                            VerticalAlignment="Center" />
                 <TextBlock Text="{Binding Header}" FontSize="12"
@@ -92,6 +92,11 @@
                 <NavigationViewItem Content="视频裁剪" Tag="trim">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE8B9;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="视频压制" Tag="compress">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE8EF;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem Content="任务中心" Tag="tasks">

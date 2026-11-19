@@ -10,6 +10,7 @@ public enum TaskKind
     SubtitleMerge,
     VideoMerge,
     VideoTrim,
+    VideoCompress,
 }
 
 /// <summary>任务的五个真实状态（与 Core 的报告一致，不虚构暂停/续传）。</summary>
@@ -70,14 +71,16 @@ public sealed partial class TaskRecord : ObservableObject
     {
         TaskKind.SubtitleMerge => "字幕合并",
         TaskKind.VideoMerge => "视频合并",
-        _ => "视频裁剪",
+        TaskKind.VideoTrim => "视频裁剪",
+        _ => "视频压制",
     };
 
     public string KindGlyph => Kind switch
     {
         TaskKind.SubtitleMerge => "\uE8AC",
         TaskKind.VideoMerge => "\uE714",
-        _ => "\uE8B9",
+        TaskKind.VideoTrim => "\uE8B9",
+        _ => "\uE8EF",
     };
 
     public string StateText => State switch

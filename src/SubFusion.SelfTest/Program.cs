@@ -4,6 +4,7 @@ using System.Text.Json;
 using SubFusion.Core;
 using SubFusion.Core.Models;
 using SubFusion.Core.Chapters;
+using SubFusion.Core.Compress;
 using SubFusion.Core.Media;
 using SubFusion.Core.Merge;
 using SubFusion.Core.Services;
@@ -106,6 +107,8 @@ internal static class Program
         CheckProgressTerminalDelivery();
         Console.WriteLine("=== S. 无损组合分配到文件夹");
         await CheckGroupFolderExportAsync();
+        Console.WriteLine("=== T. 视频压制（独立引擎 / 硬件编码探测 / 命令形状）");
+        await CheckCompressAsync();
 
         Console.WriteLine();
         Console.WriteLine($"通过：{_passed} 项，失败：{Failures.Count} 项");
@@ -3272,6 +3275,229 @@ internal static class Program
             try { Directory.Delete(work, recursive: true); } catch { /* 忽略 */ }
         }
     }
+
+    #region T. 视频压制（独立引擎 / 硬件编码探测 / 命令形状）
+
+    /// <summary>
+    /// 视频压制模块的自检。
+    ///
+    /// 这个模块最容易出现的不是崩溃，而是**说谎**：界面写着「AMD 显卡加速」，
+    /// 实际跑的是 CPU；或者编码器探测只看了 -encoders 列表就宣告可用，
+    /// 而机器上根本没有对应显卡。因此下面的断言除了真实压制一遍，
+    /// 还要验证「探测结论必须是初始化编码得出的」。
+    /// </summary>
+    private static async Task CheckCompressAsync()
+    {
+        string work = Path.Combine(Path.GetTempPath(), "subfusion_comp_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(work);
+        try
+        {
+            string ffmpeg = ToolLocator.FindFfmpeg() ?? "";
+            string ffprobe = ToolLocator.FindFfprobe() ?? "";
+            if (string.IsNullOrEmpty(ffmpeg) || string.IsNullOrEmpty(ffprobe))
+            {
+                Check("T0 跳过：本机没有 ffmpeg / ffprobe", false, "无法执行压制端到端校验");
+                return;
+            }
+
+            string source = Path.Combine(work, "source.mp4");
+            List<string> makeArgs = new()
+            {
+                "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+                "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", source,
+            };
+            ProcessCapture made = await ProcessUtil.RunAsync(ffmpeg, makeArgs, 120).ConfigureAwait(false);
+            if (made.ExitCode != 0 || !File.Exists(source))
+            {
+                Check("T0 生成测试素材", false, made.Stderr);
+                return;
+            }
+
+            var tools = await FfmpegTools.ResolveAsync(ffmpeg, ffprobe).ConfigureAwait(false);
+            var task = new VideoCompressTask(tools);
+            (MediaBundle bundle, IReadOnlyList<EncoderAvailability> encoders) = await task.AnalyzeAsync(source)
+                .ConfigureAwait(false);
+
+            Check("T1 探测到输入视频流", bundle.PrimaryVideo is not null, bundle.Error);
+            Check("T2 探测结果覆盖软件与硬件编码器",
+                  encoders.Any(e => e.Kind == EncoderKind.Software) &&
+                  encoders.Any(e => e.Kind != EncoderKind.Software),
+                  "共 " + encoders.Count + " 项");
+            Check("T3 至少有一个可用编码器", encoders.Any(e => e.Usable),
+                  string.Join("; ", encoders.Select(e => e.Name + "=" + e.Usable)));
+
+            List<EncoderAvailability> listedButBroken = encoders
+                .Where(e => !e.Usable && e.Error.Length > 0 && !e.Error.Contains("不含该编码器"))
+                .ToList();
+            Check("T4 列在 -encoders 里但本机不能用的编码器被判为不可用",
+                  listedButBroken.Count > 0 || encoders.All(e => e.Usable),
+                  "判为不可用：" + string.Join("、", listedButBroken.Select(e => e.Name)));
+
+            EncoderAvailability? autoPick = HardwareEncoder.Select(encoders, VideoCodecKind.H264, "auto");
+            EncoderAvailability? softwarePick = HardwareEncoder.Select(encoders, VideoCodecKind.H264, "software");
+            EncoderAvailability? hardwarePick = HardwareEncoder.Select(encoders, VideoCodecKind.H264, "hardware");
+            Check("T5 software 偏好只会选到软件编码器",
+                  softwarePick is not null && softwarePick.Kind == EncoderKind.Software);
+            Check("T6 hardware 偏好不会退化成软件编码器",
+                  hardwarePick is null || hardwarePick.Kind != EncoderKind.Software);
+            Check("T7 auto 在有硬件时优先硬件",
+                  autoPick is not null &&
+                  (encoders.Any(e => e.Usable && e.Kind != EncoderKind.Software && e.Codec == VideoCodecKind.H264)
+                      ? autoPick.Kind != EncoderKind.Software
+                      : autoPick.Kind == EncoderKind.Software),
+                  "选中 " + (autoPick?.Name ?? "<null>"));
+
+            var options = new VideoCompressOptions
+            {
+                Input = source,
+                OutputPath = Path.Combine(work, "o.mp4"),
+                Codec = VideoCodecKind.H264,
+                Quality = 23,
+                Container = "mp4",
+            };
+            EncoderAvailability fakeAmf = new()
+            {
+                Name = "h264_amf", Kind = EncoderKind.Amf, Codec = VideoCodecKind.H264, Usable = true,
+            };
+            List<string> hwCmd = CompressCommandBuilder.Build(options, bundle, fakeAmf, ffmpeg, options.OutputPath);
+            Check("T8 硬件命令使用硬件编码器与 CQP 码控",
+                  hwCmd.Contains("h264_amf") && hwCmd.Contains("cqp"));
+            Check("T9 硬件命令不出现 x264 专用的 -preset / -crf",
+                  !hwCmd.Contains("-preset") && !hwCmd.Contains("-crf"), string.Join(" ", hwCmd));
+            Check("T10 硬件命令的 QP 按校准偏移换算（qp 不等于画质档原值）",
+                  hwCmd.Contains(CompressCommandBuilder.HardwareQp(23).ToString(CultureInfo.InvariantCulture)) &&
+                  CompressCommandBuilder.HardwareQp(23) != 23);
+
+            EncoderAvailability fakeX264 = new()
+            {
+                Name = "libx264", Kind = EncoderKind.Software, Codec = VideoCodecKind.H264, Usable = true,
+            };
+            List<string> swCmd = CompressCommandBuilder.Build(options, bundle, fakeX264, ffmpeg, options.OutputPath);
+            Check("T11 软件命令使用 -crf 而不是 CQP", swCmd.Contains("-crf") && !swCmd.Contains("cqp"));
+            Check("T12 命令含 -avoid_negative_ts make_zero（防音频整段前移）",
+                  swCmd.Contains("-avoid_negative_ts") && swCmd.Contains("make_zero"));
+            Check("T13 命令不继承原视频章节", swCmd.Contains("-map_chapters"));
+            Check("T14 mp4 输出带 faststart", swCmd.Contains("+faststart"));
+            Check("T15 输出路径是命令的最后一个参数", swCmd[^1] == options.OutputPath, swCmd[^1]);
+
+            Check("T16 滤镜链强制 4:2:0 的偶数尺寸",
+                  (CompressCommandBuilder.BuildFilter(options, bundle) ?? "").Contains("trunc(iw/2)*2"));
+
+            VideoCompressOptions upscale = options.Clone();
+            upscale.FrameRate = 60;
+            string? filter = CompressCommandBuilder.BuildFilter(upscale, bundle);
+            Check("T17 目标帧率高于源时不升帧（只会白变大）",
+                  filter is null || !filter.Contains("fps=", StringComparison.Ordinal), filter ?? "<null>");
+
+            VideoCompressOptions downsample = options.Clone();
+            downsample.FrameRate = 10;
+            string? downFilter = CompressCommandBuilder.BuildFilter(downsample, bundle);
+            Check("T18 目标帧率低于源时下帧", downFilter is not null && downFilter.Contains("fps=10"));
+
+            string swOut = Path.Combine(work, "out_software.mp4");
+            var swOptions = new VideoCompressOptions
+            {
+                Input = source,
+                OutputPath = swOut,
+                Codec = VideoCodecKind.H264,
+                EncoderPreference = "software",
+                Quality = 28,
+                Container = "mp4",
+                ReencodeAudio = true,
+            };
+            CompressResult swResult = await task.RunAsync(swOptions).ConfigureAwait(false);
+            Check("T19 软件编码压制成功", swResult.Ok, swResult.Error);
+            Check("T20 软件编码确实没有用硬件加速",
+                  swResult.Ok && !swResult.HardwareEncoded, swResult.Encoder);
+            Check("T21 输出文件存在且非空",
+                  swResult.Ok && File.Exists(swOut) && new FileInfo(swOut).Length > 0);
+            Check("T22 输出时长与源一致",
+                  swResult.Ok && Math.Abs(swResult.OutputDuration - swResult.SourceDuration) < 0.3,
+                  swResult.OutputDuration.ToString(CultureInfo.InvariantCulture));
+            // 640x360 的测试图变化剧烈，压缩后未必更小；这里只要求「没有暴涨」。
+            Check("T23 压缩后体积没有暴涨（不超过源的 2 倍）",
+                  swResult.Ok && swResult.OutputBytes <= swResult.SourceBytes * 2,
+                  swResult.OutputBytes + " vs " + swResult.SourceBytes);
+
+            string hwOut = Path.Combine(work, "out_auto.mp4");
+            var hwOptions = new VideoCompressOptions
+            {
+                Input = source,
+                OutputPath = hwOut,
+                Codec = VideoCodecKind.H264,
+                EncoderPreference = "auto",
+                Quality = 28,
+                Container = "mp4",
+            };
+            CompressResult hwResult = await task.RunAsync(hwOptions).ConfigureAwait(false);
+            bool hardwareExists = encoders.Any(e => e.Usable && e.Kind != EncoderKind.Software &&
+                                                    e.Codec == VideoCodecKind.H264);
+            Check("T24 自动模式压制成功", hwResult.Ok, hwResult.Error);
+            Check("T25 有可用硬件时自动模式必须真的用了硬件（不许撒谎）",
+                  !hardwareExists || (hwResult.Ok && hwResult.HardwareEncoded),
+                  "编码器=" + hwResult.Encoder + "，硬件可用=" + hardwareExists);
+            Check("T26 结果里的编码器名与探测结果一致",
+                  hwResult.Ok && encoders.Any(e => e.Name == hwResult.Encoder), hwResult.Encoder);
+
+            string blocked = Path.Combine(work, "exists.mp4");
+            File.WriteAllBytes(blocked, new byte[] { 1, 2, 3 });
+            var noOverwrite = swOptions.Clone();
+            noOverwrite.OutputPath = blocked;
+            noOverwrite.Overwrite = false;
+            CompressResult refused = await task.RunAsync(noOverwrite).ConfigureAwait(false);
+            Check("T27 目标存在且未允许覆盖时拒绝执行", !refused.Ok);
+            Check("T28 拒绝执行时没有动用户已有的文件",
+                  File.Exists(blocked) && new FileInfo(blocked).Length == 3);
+
+            var badInput = swOptions.Clone();
+            badInput.Input = Path.Combine(work, "nope.mp4");
+            badInput.OutputPath = Path.Combine(work, "nope_out.mp4");
+            CompressResult missingInput = await task.RunAsync(badInput).ConfigureAwait(false);
+            Check("T29 输入不存在时拒绝执行", !missingInput.Ok);
+
+            Check("T30 MP4 + 不兼容音轨时提前拦下",
+                  VideoCompressOptions.ValidateAudioCopy("mp4", "vorbis", true).Count > 0);
+            Check("T31 MKV 不限制音轨格式",
+                  VideoCompressOptions.ValidateAudioCopy("mkv", "vorbis", true).Count == 0);
+            Check("T32 无音轨时不报错",
+                  VideoCompressOptions.ValidateAudioCopy("mp4", "vorbis", false).Count == 0);
+
+            string? probeSource = FindCoreFile(Path.Combine("Compress", "HardwareEncoder.cs"));
+            Check("T33 硬件探测真的启动一次编码（不是只读编码器列表）",
+                  probeSource is not null &&
+                  probeSource.Contains("-frames:v", StringComparison.Ordinal) &&
+                  probeSource.Contains("ProbeOneAsync", StringComparison.Ordinal),
+                  "只看 -encoders 列表会把「有编码器但没有显卡」误判成可用");
+
+            string? engineSource = FindCoreFile(Path.Combine("Compress", "VideoCompressEngine.cs"));
+            Check("T34 引擎先渲染到临时文件、校验通过才落盘",
+                  engineSource is not null &&
+                  engineSource.Contains("TempRenderPath", StringComparison.Ordinal) &&
+                  engineSource.Contains("FileMover.MoveAsync", StringComparison.Ordinal),
+                  "直接写最终路径会在失败时删掉用户原有文件");
+
+            string appRoot = FindAppRoot() ?? "";
+            Check("T35 压制页与 ViewModel 已建立",
+                  File.Exists(Path.Combine(appRoot, "Pages", "CompressPage.xaml")) &&
+                  File.Exists(Path.Combine(appRoot, "ViewModels", "VideoCompressViewModel.cs")));
+            Check("T36 压制页已接入导航",
+                  (File.ReadAllText(Path.Combine(appRoot, "ViewModels", "ShellViewModel.cs"))
+                       .Contains("\"compress\"", StringComparison.Ordinal)) &&
+                  (File.ReadAllText(Path.Combine(appRoot, "Views", "MainWindow.xaml.cs"))
+                       .Contains("compressed", StringComparison.OrdinalIgnoreCase) ||
+                   File.ReadAllText(Path.Combine(appRoot, "Views", "MainWindow.xaml.cs"))
+                       .Contains("CompressPage", StringComparison.Ordinal)));
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    #endregion
 
     #endregion
 }

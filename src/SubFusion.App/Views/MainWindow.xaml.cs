@@ -90,6 +90,8 @@ public sealed partial class MainWindow : Window, IUiServices
         if (subArg >= 0 && subArg + 1 < argv.Length) _ = RunSubtitleE2EAsync(argv[subArg + 1]);
         int trimArg = Array.IndexOf(argv, "--trim-e2e");
         if (trimArg >= 0 && trimArg + 1 < argv.Length) _ = RunTrimE2EAsync(argv[trimArg + 1]);
+        int compressArg = Array.IndexOf(argv, "--compress-e2e");
+        if (compressArg >= 0 && compressArg + 1 < argv.Length) _ = RunCompressE2EAsync(argv[compressArg + 1]);
 
         // 验收/复现钩子（--dir <文件夹>）：走与拖放完全相同的入口把文件加进来。
         int dirArg = Array.IndexOf(argv, "--dir");
@@ -222,7 +224,7 @@ public sealed partial class MainWindow : Window, IUiServices
                               " scale=" + (Root.XamlRoot?.RasterizationScale ?? 1).ToString("0.##"));
             report.AppendLine("nav=" + Nav.PaneDisplayMode + " openPane=" + Nav.IsPaneOpen);
 
-            string[] tags = { "subtitle", "merge", "trim", "tasks", "settings" };
+            string[] tags = { "subtitle", "merge", "trim", "compress", "tasks", "settings" };
             foreach (string tag in tags)
             {
                 ViewModel.NavigateCommand.Execute(tag);
@@ -506,6 +508,76 @@ public sealed partial class MainWindow : Window, IUiServices
         }
     }
 
+    /// <summary>
+    /// 视频压制端到端自检（--compress-e2e &lt;视频文件&gt;）：真实走一遍
+    /// 「选文件 → Core 探测/硬件编码器检测 → 压制 → 校验」，结论写进 %TEMP%\subfusion_compress_e2e.txt。
+    /// 与用户点「开始压制」走同一条命令路径（VideoCompressViewModel.StartCommand）。
+    /// </summary>
+    private async Task RunCompressE2EAsync(string input)
+    {
+        var report = new System.Text.StringBuilder();
+        try
+        {
+            await Task.Delay(1500);
+            ViewModel.NavigateCommand.Execute("compress");
+            Nav.SelectedItem = FindNavItem("compress");
+            await Task.Delay(800);
+
+            ViewModel.Compress.InputPath = input;
+            for (int i = 0; i < 240 && ViewModel.Compress.Analyzing; i++) await Task.Delay(250);
+            await Task.Delay(1200);
+
+            report.AppendLine("input=" + input);
+            report.AppendLine("hasInput=" + ViewModel.Compress.HasInput);
+            report.AppendLine("mediaInfo=" + ViewModel.Compress.MediaInfoText.Replace("\n", " | "));
+            report.AppendLine("encoders=" + ViewModel.Compress.EncoderSummary.Replace("\n", " | "));
+            report.AppendLine("encoderWarning=" + ViewModel.Compress.EncoderWarning);
+            report.AppendLine("hardwareReady=" + ViewModel.Compress.HardwareReady);
+
+            ViewModel.Compress.OutputDirectory = Path.GetDirectoryName(input) ?? "";
+            ViewModel.Compress.SetOutputNameForTest("compress_out");
+            ViewModel.Compress.Quality = 28;
+            await Task.Delay(600);
+
+            report.AppendLine("plan=" + ViewModel.Compress.PlanText);
+            report.AppendLine("planDetail=" + ViewModel.Compress.PlanDetail.Replace("\n", " | "));
+            report.AppendLine("estimate=" + ViewModel.Compress.EstimateText);
+            report.AppendLine("planError=" + ViewModel.Compress.PlanError);
+            report.AppendLine("outputPath=" + ViewModel.Compress.OutputPath);
+            report.AppendLine("canStart=" + ViewModel.Compress.CanStart);
+
+            ViewModel.Compress.StartCommand.Execute(null);
+            for (int i = 0; i < 600 && ViewModel.Compress.IsRunning; i++) await Task.Delay(500);
+            await Task.Delay(1500);
+
+            report.AppendLine("stage=" + ViewModel.Compress.StageText);
+            report.AppendLine("resultOk=" + ViewModel.Compress.ResultOk);
+            report.AppendLine("result=" + ViewModel.Compress.ResultText.Replace("\n", " | "));
+            report.AppendLine("encoder=" + ViewModel.Compress.ActiveEncoderText);
+            report.AppendLine("outputExists=" + File.Exists(ViewModel.Compress.OutputPath));
+
+            var taskCenter = ViewModel.TaskCenterPage;
+            taskCenter.Refresh();
+            report.AppendLine("taskCount=" + taskCenter.Filtered.Count);
+            if (taskCenter.Filtered.Count > 0)
+            {
+                TaskRecord first = taskCenter.Filtered[0];
+                report.AppendLine("taskKind=" + first.KindText);
+                report.AppendLine("taskState=" + first.StateText);
+                report.AppendLine("taskLogLines=" + first.Log.Count);
+            }
+        }
+        catch (Exception ex)
+        {
+            report.AppendLine("COMPRESS-E2E-ERROR: " + ex);
+        }
+        finally
+        {
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "subfusion_compress_e2e.txt"), report.ToString());
+            Environment.Exit(0);
+        }
+    }
+
     private NavigationViewItem? FindNavItem(string tag)
     {
         foreach (object item in Nav.MenuItems.Concat(Nav.FooterMenuItems))
@@ -525,6 +597,7 @@ public sealed partial class MainWindow : Window, IUiServices
     {
         if (ViewModel.SelectedTag == "merge") await ViewModel.Merge.AddPathsAsync(paths);
         else if (ViewModel.SelectedTag == "trim") ViewModel.Trim.AcceptDroppedFile(paths);
+        else if (ViewModel.SelectedTag == "compress") ViewModel.Compress.AcceptDroppedFile(paths);
         else await ViewModel.Subtitle.AddPathsAsync(paths);
     }
 
@@ -538,6 +611,7 @@ public sealed partial class MainWindow : Window, IUiServices
             "subtitle" => typeof(Pages.SubtitlePage),
             "merge" => typeof(Pages.MergePage),
             "trim" => typeof(Pages.TrimPage),
+            "compress" => typeof(Pages.CompressPage),
             "tasks" => typeof(Pages.TaskCenterPage),
             "settings" => typeof(Pages.SettingsPage),
             _ => typeof(Pages.SubtitlePage),

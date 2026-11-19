@@ -33,7 +33,10 @@ SubFusion/
 ├── SubFusion.sln                     # 3 个项目（Core / App / SelfTest）
 ├── Directory.Build.props             # 仅 SingleFile 发布时给被引用项目嵌入 PDB
 ├── AGENT.MD                          # 本文件（唯一工程文档）
-├── app.ico                           # 图标（App.csproj 以 Content 链到 Assets\app.ico）
+├── app.ico                           # 多尺寸图标（16~256 共 10 帧）：PE 文件图标 + 运行期窗口图标
+├── assets/app-icon.png               # 图标母版（512px 透明 PNG），唯一设计源
+├── tools/prepare_master.py           # 把设计稿整理成 assets/app-icon.png
+├── tools/make_icons.py               # 生成 app.ico 与 Assets/app-icon.png（预乘 alpha 缩放 + 小尺寸补偿）
 ├── 启动.bat                          # 一键启动；dist\SingleExe\SubFusion.exe 不存在时自动发布
 └── src/
     ├── SubFusion.Core/               # net8.0 类库：纯业务逻辑，禁止引用 WinRT/UI
@@ -55,6 +58,13 @@ SubFusion/
     │   │   ├── MergeResult.cs        #     结果模型（状态/阶段/输出/章节/原因/诊断）
     │   │   ├── VideoMergeEngine.cs   #     编排：校验→探测→判定→编码→拼接→章节→校验
     │   │   └── VideoMergeTask.cs     #     对外任务接口（RunAsync / AnalyzeAsync / ProbeAsync）
+    │   ├── Compress/                 #   ★ 视频压制（独立模块，不复用裁剪/合并执行路径）
+    │   │   ├── HardwareEncoder.cs    #     编码器真实可用性探测（真编码 3 帧才判定）+ 选择策略
+    │   │   ├── VideoCompressOptions.cs #   参数对象（格式/编码器偏好/码率/缩放/帧率/音频）
+    │   │   ├── CompressCommandBuilder.cs # 命令与滤镜链构造（硬件 CQP / 软件 CRF 两套参数）
+    │   │   ├── CompressResult.cs     #     结果模型（编码器/硬解硬编标记/体积/诊断）
+    │   │   ├── VideoCompressEngine.cs #    编排：校验→探测→选编码器→编码→校验→落盘
+    │   │   └── VideoCompressTask.cs  #     对外任务接口（RunAsync / AnalyzeAsync）
     │   ├── Chapters/                 #   ★ MKV 自动章节
     │   │   ├── ChapterEntry.cs       #     章节模型（秒 + 毫秒格式化）
     │   │   ├── ChapterTimeline.cs    #     时间轴计算与合法性校验
@@ -81,10 +91,11 @@ SubFusion/
     │   │   ├── Theme.xaml            #     语义色（浅/深/高对比）、间距、字号、圆角、弹窗宽度
     │   │   └── Controls.xaml         #     页面标题/分组标题/辅助文字/卡片/徽标/列表行等样式
     │   ├── Views/                    #   MainWindow（外壳 + IUiServices 实现）、SubtitleTrackDialog
-    │   ├── Pages/                    #   四个页面（XAML + 极薄 code-behind）
+    │   ├── Pages/                    #   六个页面（XAML + 极薄 code-behind）
     │   │   ├── SubtitlePage          #     字幕合并工作区
     │   │   ├── MergePage             #     视频合并工作区
     │   │   ├── TaskCenterPage        #     任务中心
+    │   │   ├── CompressPage          #     视频压制工作区
     │   │   └── SettingsPage          #     设置
     │   ├── ViewModels/               #   Shell / Subtitle / VideoMerge / TaskCenter / Settings
     │   └── Services/                 #   IUiServices、AppSettings、TaskCenter、ThemeService、
@@ -216,7 +227,7 @@ GUI 层是一次完整重构，界面已全部重建：**没有沿用旧 MainWin
 
 - 顶部自绘标题栏（`TitleBarRegion`）：左侧应用图标 + 名称 + 当前页面名，
   右侧常驻 **ffmpeg 状态胶囊**（圆点 + 简短状态，悬停显示完整版本），再往右留 150 DIP 给系统标题按钮；
-- `NavigationView`（`PaneDisplayMode=Auto`）四个顶层入口：字幕合并 / 视频合并 / 任务中心，
+- `NavigationView`（`PaneDisplayMode=Auto`）五个顶层入口：字幕合并 / 视频合并 / 视频裁剪 / 视频压制 / 任务中心，
   设置固定在 `FooterMenuItems`；启动默认进入字幕合并；
 - 内容区是 `Frame`，带 `NavigationThemeTransition`，页面切换有原生过渡；
 - 底部状态栏只保留**文字摘要**（当前操作 + 任务计数）；不放进度条（进度属于各工作区内容区）、
@@ -235,6 +246,8 @@ GUI 层是一次完整重构，界面已全部重建：**没有沿用旧 MainWin
 | --- | --- | --- |
 | 字幕合并 | `SubtitleViewModel` | 输入收集/匹配/字幕轨编辑/参数/执行/日志（实现 `IBatchEvents`） |
 | 视频合并 | `VideoMergeViewModel` | 输入与排序、兼容性分析展示、参数、执行与结果 |
+| 视频裁剪 | `VideoTrimViewModel` | 区间选择、关键帧吸附展示、参数、执行与结果 |
+| 视频压制 | `VideoCompressViewModel` | 编码器真实状态展示、画质/码率/缩放参数、体积预估、执行与结果 |
 | 任务中心 | `TaskCenterViewModel` | 统一任务列表、筛选、详情投影、取消/清理/诊断 |
 | 设置 | `SettingsViewModel` | 外观/工具/字幕默认值/视频默认值/配置文件 |
 
@@ -345,7 +358,7 @@ $env:TMP = $tmp; $env:TEMP = $tmp
 
 ## 6. 测试
 
-`SelfTest` 是唯一测试入口。完整模式 **589 项断言**、`--skip-e2e` **575 项**（跳过 B 组端到端），两者均全部通过：
+`SelfTest` 是唯一测试入口。完整模式 **625 项断言**，全部通过：
 
 | 分组 | 内容 |
 | --- | --- |
@@ -366,6 +379,7 @@ $env:TMP = $tmp; $env:TEMP = $tmp
 | P | 输入截断检测与收尾（含「可读终点未知时不下判断」） |
 | Q | 输出搬运与进度可见性（同卷改名 / 跨卷带进度复制 / 取消清理） |
 | S | 无损组合分配到文件夹 |
+| T | 视频压制（36 项）：编码器真实探测、软/硬编码选择策略、命令形状、真实压制、拒绝覆盖、结构守卫 |
 
 G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine），不依赖任何外部视频文件。
 测试素材显式用 `setparams` 写 BT.709 标记，否则同一批素材的色彩字段会是「未知」，兼容性判定无法对齐。
@@ -390,6 +404,23 @@ G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine）�
 
 `NETSDK1244` 已在该 pubxml 内定向抑制并注明原因：WinAppSDK 的单文件 targets 依赖
 「全部内容解压到磁盘 + SxS 重定向」，去掉 `IncludeAllContentForSelfExtract` 会让产物无法启动。
+
+### 7.2.1 图标
+
+图标有三个出口，**都指向同一个 `app.ico`**，改图标时缺一不可：
+
+| 出口 | 机制 | 生效位置 |
+| --- | --- | --- |
+| `SubFusion.App.csproj` 的 `<ApplicationIcon>` | apphost 在链接阶段写入 PE 的 `RT_GROUP_ICON` / `RT_ICON` | 资源管理器、桌面、任务栏、单文件 EXE 文件本身 |
+| `MainWindow` 的 `AppWindow.SetIcon("Assets/app.ico")` | 运行期给窗口句柄设置图标 | 已打开窗口的标题栏 / 任务栏 |
+| `Views/MainWindow.xaml` 的 `ms-appx:///Assets/app-icon.png` | 自绘标题栏左侧 16px 位图 | 窗口内标题栏 |
+
+> 只有 `AppWindow.SetIcon` 而**没有** `<ApplicationIcon>` 时，exe 资源段里一个图标都没有，
+> 单文件发布拷到桌面就是白纸图标——v2.1.0 及更早版本正是这个状态。
+> 单文件打包（bundle）只在 apphost 之后追加数据段，不会覆盖这段资源，所以目录发布与单文件发布都带图标。
+
+图标产物一律由 `tools/make_icons.py` 从母版 `assets/app-icon.png` 生成：10 个尺寸中 16~64 用 DIB、
+96/128/256 用 PNG 压缩；16~32 额外做轻微饱和度/对比度补偿，否则缩小后在任务栏会糊成浅色块。
 
 ### 7.3 运行限制（如实说明）
 
@@ -467,6 +498,17 @@ G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine）�
   新增异步事件处理器一律用 `CrashGuard.FireAndForget` 包住。
 - **加页面**：在 `Pages/` 建 `XxxPage.xaml`、在 `ViewModels/` 建 VM、在 `ShellViewModel.PageMeta`
   与 `MainWindow.NavigateTo` 各加一条映射，并在 `NavigationView` 里加一个 `NavigationViewItem`。
+- **改图标**：只替换 `assets/app-icon.png`（512px 方形、透明背景、图案尽量占满画布），
+  然后跑 `python tools/make_icons.py` 重新生成 `app.ico` 与 `src/SubFusion.App/Assets/app-icon.png`。
+  不要用在线工具手转 ico：自带脚本保证 16/20/24/32 都有独立帧，Windows 才会在高 DPI 下取到清晰帧。
+  改完必须重新发布——PE 资源是链接期写入的，旧 exe 不会自己变。
+- **改视频压制**：`VideoCompressEngine` 是唯一编排点，`CompressCommandBuilder` 是唯一命令出口，
+  `HardwareEncoder.ProbeAsync` 是唯一「编码器到底能不能用」的判定。三条必须保持：
+  ① 探测必须真的编码 3 帧（`-frames:v 3`），只看 `-encoders` 列表会把「有编码器但没有显卡」判成可用；
+     探测尺寸固定 320x240——AMF 的 HEVC 在 256x144 以下会失败，用 64x64 探测会误判本机可用的 hevc_amf；
+  ② 硬件与软件的参数集不能混用：硬件用 `-quality/-rc cqp/-qp_*`，软件用 `-preset/-crf`，混用直接 Invalid argument；
+     界面上的「画质档」是 CRF 语义，硬件侧按 `HardwareQp`（+6）换算，别把同一个数字原样塞给 CQP；
+  ③ 引擎先渲染到临时文件、校验通过才 `FileMover.MoveAsync` 到最终路径；直接写最终路径会在失败时删掉用户原有文件。
 - **改主题**：只改 `Styles/Theme.xaml` 的语义色或 `Controls.xaml` 的样式，
   不要在页面里写颜色字面量（C 组断言会检查 ViewModel 边界，人工审查检查页面）。
 - **改配置**：`AppSettings` 加属性 + `Read`/`Save` 各一行；设置页相应加控件。

@@ -12,6 +12,24 @@
     <RootNamespace>SubFusion.App</RootNamespace>
     <AssemblyName>SubFusion</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!--
+      Win32 文件图标（资源管理器 / 任务栏 / 单文件发布后的 EXE）。
+      之前只有运行时的 AppWindow.SetIcon，没有这个属性，所以编译出的 exe 里
+      根本没有 RT_GROUP_ICON 资源——单文件发布把 exe 拷到桌面后就显示成白纸图标。
+      ApplicationIcon 由 apphost 在链接阶段写入 PE 资源；单文件打包（bundle）
+      只在其后追加数据段，不会覆盖这一资源，因此目录发布与单文件发布都生效。
+    -->
+    <ApplicationIcon>..\..\app.ico</ApplicationIcon>
+    <!--
+      版本元数据：写进 PE 的 VS_VERSION_INFO，资源管理器「属性 → 详细信息」里能看到。
+      Core/Constants.cs 的 AppVersion 用于标题栏；发布新版本时两处一起改，
+      否则文件属性会一直停在旧版本号。
+    -->
+    <Version>2.2.0</Version>
+    <FileVersion>2.2.0.0</FileVersion>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <Product>SubFusion</Product>
+    <Company>Utpop</Company>
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <UseWinUI>true</UseWinUI>
@@ -51,8 +69,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- 沿用原程序的图标资源；AppWindow.SetIcon 直接读取输出目录下的该文件 -->
+    <!--
+      图标资源（由 tools/make_icons.py 从 assets/app-icon.png 生成）：
+        Assets/app.ico       运行期 AppWindow.SetIcon 读取（含 16~256 十个尺寸）
+        Assets/app-icon.png  标题栏左侧 16px 位图（ms-appx 引用；ico 在 16px 下边缘发虚）
+      PE 里的文件图标来自上面的 <ApplicationIcon>，两者共用同一个 app.ico。
+    -->
     <Content Include="..\..\app.ico" Link="Assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\app-icon.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!--

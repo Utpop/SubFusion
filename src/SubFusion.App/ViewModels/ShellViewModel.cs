@@ -32,6 +32,7 @@ public sealed partial class ShellViewModel : ObservableObject
         Subtitle = new SubtitleViewModel(ui, settings, tasks);
         Merge = new VideoMergeViewModel(ui, settings, tasks);
         Trim = new VideoTrimViewModel(ui, settings, tasks);
+        Compress = new VideoCompressViewModel(ui, settings, tasks);
         TaskCenterPage = new TaskCenterViewModel(tasks, ui);
         Settings = new SettingsViewModel(settings, ui);
 
@@ -47,6 +48,7 @@ public sealed partial class ShellViewModel : ObservableObject
     public SubtitleViewModel Subtitle { get; }
     public VideoMergeViewModel Merge { get; }
     public VideoTrimViewModel Trim { get; }
+    public VideoCompressViewModel Compress { get; }
     public TaskCenterViewModel TaskCenterPage { get; }
     public SettingsViewModel Settings { get; }
 
@@ -104,6 +106,7 @@ public sealed partial class ShellViewModel : ObservableObject
         ["subtitle"] = "字幕合并",
         ["merge"] = "视频合并",
         ["trim"] = "视频裁剪",
+        ["compress"] = "视频压制",
         ["tasks"] = "任务中心",
         ["settings"] = "设置",
     };
@@ -131,6 +134,7 @@ public sealed partial class ShellViewModel : ObservableObject
         Subtitle.Initialize();
         Merge.Initialize();
         Trim.Initialize();
+        Compress.Initialize();
         RefreshStatusBar();
         Navigate(initialTag);
         _ = RequestDetectToolsAsync();
@@ -232,6 +236,7 @@ public sealed partial class ShellViewModel : ObservableObject
             _lastMergeFfprobe = ffprobe;
             Merge.InvalidateTools();
             Trim.InvalidateTools();
+            Compress.InvalidateTools();
         }
 
         var missing = new List<string>();
@@ -256,6 +261,7 @@ public sealed partial class ShellViewModel : ObservableObject
         Subtitle.ReloadFromSettings();
         Merge.Initialize();
         Trim.Initialize();
+        Compress.ApplyDefaults();
     }
 
     [RelayCommand]
