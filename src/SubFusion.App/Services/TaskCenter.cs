@@ -168,9 +168,6 @@ public sealed class TaskCenter : ObservableObject
     public int FailedCount => Tasks.Count(t => t.State == TaskState.Failed);
     public int TotalCount => Tasks.Count;
 
-    public TaskRecord? Current => Tasks.FirstOrDefault(t => t.State == TaskState.Running)
-                                  ?? Tasks.FirstOrDefault(t => t.State == TaskState.Queued);
-
     /// <summary>新建任务记录（可在任意线程调用，返回的记录已加入集合）。</summary>
     public TaskRecord Add(TaskKind kind, string title, string inputSummary, string outputPath)
     {
@@ -194,8 +191,31 @@ public sealed class TaskCenter : ObservableObject
             record.RefreshDerived();
             // 进度/文案变化由记录自身的 ObservableProperty 通知处理，任务中心聚合统计
             // 只在真正改变任务状态时重算，避免高频进度刷新筛选列表与统计。
-            if (record.State != before) RaiseChanged();
+            if (record.State != before)
+            {
+                RaiseChanged();
+                return;
+            }
+            // 状态没变时，「用时」仍要跟着走：ElapsedText 是按 DateTimeOffset.Now 现算的，
+            // 而详情面板绑的是 TaskCenterViewModel.SelectedElapsed —— 那个只在 Refresh() 里重算。
+            // 不广播的话，长任务运行期间「用时」会冻在开始那一刻，直到任务结束才突然跳变。
+            // 这里走独立事件 + 2 秒节流：既不重建筛选列表，也不重算聚合统计。
+            if (record.State == TaskState.Running) RaiseElapsedTick();
         });
+
+    /// <summary>仅「用时」变化时触发（不做列表同步、不重算统计）。</summary>
+    public event EventHandler? ElapsedTick;
+
+    private DateTime _lastElapsedTick = DateTime.MinValue;
+
+    /// <summary>节流到最多 2 秒一次：进度回调本身就不慢于此量级，再密也不会有可读变化。</summary>
+    private void RaiseElapsedTick()
+    {
+        DateTime now = DateTime.UtcNow;
+        if ((now - _lastElapsedTick).TotalSeconds < 2) return;
+        _lastElapsedTick = now;
+        ElapsedTick?.Invoke(this, EventArgs.Empty);
+    }
 
     /// <summary>追加诊断日志；超过上限后丢弃最早的行，避免长任务把内存吃满。</summary>
     public void AppendLog(TaskRecord record, string line)
@@ -261,17 +281,18 @@ public sealed class TaskCenter : ObservableObject
         if (removed) RaiseChanged();
     }
 
-    private DateTime _lastChangedRaise = DateTime.MinValue;
-
-    internal void RaiseChanged(bool throttle = false)
+    /// <summary>
+    /// 广播「任务集合或某个任务的状态已变化」。
+    /// 这里曾经有一个 <c>throttle</c> 参数和对应的 200ms 节流分支，但 6 个调用点
+    /// 全部无参调用它，节流从未生效、_lastChangedRaise 只写不读。
+    /// 真正需要限速的是「进度刷新」，那件事由 <see cref="ElapsedTick"/> 单独承担。
+    /// </summary>
+    internal void RaiseChanged()
     {
-        if (throttle && (DateTime.UtcNow - _lastChangedRaise).TotalMilliseconds < 200) return;
-        _lastChangedRaise = DateTime.UtcNow;
         OnPropertyChanged(nameof(RunningCount));
         OnPropertyChanged(nameof(CompletedCount));
         OnPropertyChanged(nameof(FailedCount));
         OnPropertyChanged(nameof(TotalCount));
-        OnPropertyChanged(nameof(Current));
         Changed?.Invoke(this, EventArgs.Empty);
     }
 }

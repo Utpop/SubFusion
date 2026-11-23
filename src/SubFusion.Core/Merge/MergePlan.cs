@@ -95,8 +95,9 @@ public sealed class MergePlan
         string outputCodecName = codec.Contains("265", StringComparison.Ordinal) ||
                                  codec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ? "hevc"
             : codec is "mpeg4" or "mpeg2video" ? codec : "h264";
-        // 老编码不认 -crf/-preset，走固定质量档（qscale），下面按此分支拼参数。
-        bool legacyCodec = codec is "mpeg4" or "mpeg2video";
+        // 老编码（mpeg4 / mpeg2video）不认 -crf/-preset，走固定质量档（qscale）。
+        // 判定只在 BuildSegmentCommand 里做一次：这里曾有一个 legacyCodec 局部变量，
+        // 全文没有任何引用，两个判定点迟早会分叉。
 
         // 能力回退：ffmpeg 未编译对应编码器时退回 libx264，避免生成必然失败的命令行。
         bool fallbackX265 = false, fallbackNvenc = false;
@@ -346,10 +347,14 @@ public sealed class MergePlan
         }
         if (TargetFrameRate > 0)
             cmd.AddRange(new[] { "-r", TargetFrameRate.ToString("0.###", CultureInfo.InvariantCulture) });
-        // 老编码的 SAR 由码流头携带，仅靠 setsar 滤镜不够，必须同时写容器侧的 -aspect，
-        // 否则输出会被 ffprobe 报成约分后的近似值（如 100:99），与保留段对不上。
-        if (TargetSar.Length > 0)
-            cmd.AddRange(new[] { "-aspect", TargetSar });
+        // 这里刻意不再写容器侧的 -aspect。
+        //
+        // -aspect 设置的是容器 DAR，ffmpeg 会据此反算 SAR，因此它会**覆盖**滤镜里的 setsar：
+        // 实测源 SAR 40:33、目标 1920x1080 时，同时给 -aspect 40:33 的产物是
+        // SAR 15:22 / DAR 40:33 —— 写回的根本不是请求的 40:33。
+        // 而保留段走 -c copy 仍是 SAR 40:33，两段一比就判为不一致，
+        // 「部分重编码」会次次退回全量重编码。
+        // SAR 一律由滤镜里的 setsar 写入（见 BuildVideoFilter），那是可靠的写法。
 
 
         cmd.AddRange(new[] { "-c:a", AudioCodec,
@@ -370,55 +375,100 @@ public sealed class MergePlan
         if (TonemapToSdr && bundle.PrimaryVideo is { IsHdr: true })
             return BuildTonemapChain(BuildGeometryChain(), bundle);
 
-        var parts = new List<string>
-        {
-            "setsar=1",
-            string.Format(CultureInfo.InvariantCulture, "scale={0}:{1}:force_original_aspect_ratio={2}",
-                TargetWidth, TargetHeight, Fit == FitMode.Contain ? "decrease" : "increase"),
-        };
-        if (Fit == FitMode.Contain)
-        {
-            parts.Add(string.Format(CultureInfo.InvariantCulture,
-                "pad={0}:{1}:(ow-iw)/2:(oh-ih)/2:color=black", TargetWidth, TargetHeight));
-        }
-        else if (Fit == FitMode.Cover)
-        {
-            parts.Add(string.Format(CultureInfo.InvariantCulture,
-                "crop={0}:{1}", TargetWidth, TargetHeight));
-        }
-        // Stretch：scale 的 force_original_aspect_ratio=increase 后需要精确拉伸回目标尺寸
-        if (Fit == FitMode.Stretch)
-            parts.Add(string.Format(CultureInfo.InvariantCulture, "scale={0}:{1}", TargetWidth, TargetHeight));
-
-        // 最终统一像素格式前截断到偶数尺寸，保证 yuv420p 编码不会因奇数宽高失败。
-        if (Is420()) parts.Add("scale=trunc(iw/2)*2:trunc(ih/2)*2");
-        // 有目标 SAR 时写回原像素宽高比，否则按方形像素输出。
-        parts.Add(TargetSar.Length > 0 ? "setsar=" + TargetSar.Replace(':', '/') : "setsar=1");
+        var parts = new List<string>(GeometryParts());
         parts.Add("format=" + PixelFormat);
         parts.Add(ColorMetadataFilter(bundle));
         return string.Join(",", parts);
     }
 
-    /// <summary>不含色彩处理的几何链（缩放/补边/裁切），供色调映射前置使用。</summary>
-    private string BuildGeometryChain()
+    /// <summary>
+    /// 几何链：先把源归一成方形像素（显示空间的真实宽高），再按适配模式缩放到**显示画布**，
+    /// 最后（有非方形目标 SAR 时）压回存储尺寸并写回 SAR。
+    ///
+    /// 为什么必须先在显示空间算：
+    /// 老写法第一步就是 <c>setsar=1</c>，紧接着对**存储尺寸**做 scale。对 720x480 / SAR 40:33
+    /// 的素材来说，那等于按 3:2 而不是真实的 20:11 去适配目标，画面被横向拉宽；
+    /// 末尾再套 <c>setsar=40/33</c> 也不成立——那个 SAR 只对原始 720x480 帧有效，
+    /// 对已经缩放过的方形像素帧没有意义。实测老链产出 SAR 15:22 / DAR 40:33，
+    /// 既不是源比例也不是目标比例。
+    ///
+    /// 平方像素（绝大多数素材）走这里同样正确：<c>trunc(iw*sar/2)*2</c> 在 sar=1 时等于原宽度。
+    /// </summary>
+    private List<string> GeometryParts()
     {
+        (int sarNum, int sarDen) = ParseSar(TargetSar);
+        bool anamorphic = sarNum > 0 && sarDen > 0 && Math.Abs((double)sarNum / sarDen - 1.0) > 1e-9;
+
+        // 显示画布：目标存储尺寸 × 目标 SAR。方形像素时就是目标尺寸本身。
+        int canvasW = anamorphic ? EvenRound(TargetWidth * (double)sarNum / sarDen) : TargetWidth;
+        int canvasH = TargetHeight;
+
         var parts = new List<string>
         {
+            // 1) 归一成方形像素：先乘 SAR 再取偶，得到真实的显示宽度。
+            "scale=trunc(iw*sar/2)*2:ih",
             "setsar=1",
+            // 2) 在显示空间按适配模式缩放/补边/裁切。
             string.Format(CultureInfo.InvariantCulture, "scale={0}:{1}:force_original_aspect_ratio={2}",
-                TargetWidth, TargetHeight, Fit == FitMode.Contain ? "decrease" : "increase"),
+                canvasW, canvasH, Fit == FitMode.Contain ? "decrease" : "increase"),
         };
-        if (Is420()) parts.Add("scale=trunc(iw/2)*2:trunc(ih/2)*2");
         if (Fit == FitMode.Contain)
+        {
             parts.Add(string.Format(CultureInfo.InvariantCulture,
-                "pad={0}:{1}:(ow-iw)/2:(oh-ih)/2:color=black", TargetWidth, TargetHeight));
+                "pad={0}:{1}:(ow-iw)/2:(oh-ih)/2:color=black", canvasW, canvasH));
+        }
         else if (Fit == FitMode.Cover)
-            parts.Add(string.Format(CultureInfo.InvariantCulture, "crop={0}:{1}", TargetWidth, TargetHeight));
+        {
+            parts.Add(string.Format(CultureInfo.InvariantCulture, "crop={0}:{1}", canvasW, canvasH));
+        }
+        // Stretch：force_original_aspect_ratio=increase 之后要精确拉回画布尺寸
         if (Fit == FitMode.Stretch)
-            parts.Add(string.Format(CultureInfo.InvariantCulture, "scale={0}:{1}", TargetWidth, TargetHeight));
+            parts.Add(string.Format(CultureInfo.InvariantCulture, "scale={0}:{1}", canvasW, canvasH));
+
         parts.Add("setsar=1");
-        return string.Join(",", parts);
+
+        // 3) 非方形目标：把显示画布压回存储尺寸，再写回目标 SAR（不是 -aspect）。
+        if (anamorphic)
+        {
+            parts.Add(string.Format(CultureInfo.InvariantCulture, "scale={0}:{1}", TargetWidth, TargetHeight));
+            parts.Add("setsar=" + sarNum.ToString(CultureInfo.InvariantCulture) + "/" +
+                      sarDen.ToString(CultureInfo.InvariantCulture));
+            return parts;
+        }
+
+        // 4) 方形像素：只做偶数对齐，保证 yuv420p 不会因奇数宽高失败。
+        if (Is420()) parts.Add("scale=trunc(iw/2)*2:trunc(ih/2)*2");
+        parts.Add("setsar=1");
+        return parts;
     }
+
+    /// <summary>解析 "40:33" 形式的 SAR；无法解析时返回 (1,1)（按方形像素处理）。</summary>
+    private static (int Num, int Den) ParseSar(string sar)
+    {
+        if (string.IsNullOrWhiteSpace(sar)) return (1, 1);
+        string[] parts = sar.Split(':', StringSplitOptions.TrimEntries);
+        if (parts.Length != 2) return (1, 1);
+        if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int num) ||
+            !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int den))
+            return (1, 1);
+        if (num <= 0 || den <= 0) return (1, 1);
+        return (num, den);
+    }
+
+    /// <summary>四舍五入到最近的偶数（yuv420p 要求宽高为偶数）。</summary>
+    private static int EvenRound(double value)
+    {
+        int rounded = (int)Math.Round(value, MidpointRounding.AwayFromZero);
+        if (rounded < 2) rounded = 2;
+        return rounded % 2 == 0 ? rounded : rounded + 1;
+    }
+
+    /// <summary>
+    /// 不含色彩处理的几何链（缩放/补边/裁切），供色调映射前置使用。
+    /// 与 <see cref="BuildVideoFilter"/> 共用 <see cref="GeometryParts"/>：
+    /// 两条链各写一份几何逻辑，迟早会在 SAR 或贴合模式上分叉。
+    /// </summary>
+    private string BuildGeometryChain() => string.Join(",", GeometryParts());
 
     /// <summary>
     /// 用滤镜内的 setparams 写入色彩标记。

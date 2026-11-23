@@ -1,5 +1,7 @@
 using System.Globalization;
 
+using SubFusion.Core.Media;
+
 namespace SubFusion.Core.Compress;
 
 /// <summary>压制阶段，供 UI 展示。</summary>
@@ -208,7 +210,17 @@ public sealed class VideoCompressOptions
         return errors;
     }
 
-    public VideoCompressOptions Clone() => (VideoCompressOptions)MemberwiseClone();
+    /// <summary>
+    /// 复制一份参数。可变集合必须显式复制：MemberwiseClone 只做浅拷贝，
+    /// 克隆体与原对象会共享同一个 List，任一侧增删都会改到另一侧
+    /// （VideoMergeOptions.Clone 早已按这个方式处理，这里补齐保持一致）。
+    /// </summary>
+    public VideoCompressOptions Clone()
+    {
+        var copy = (VideoCompressOptions)MemberwiseClone();
+        copy.AllowedBackends = new List<EncoderKind>(AllowedBackends);
+        return copy;
+    }
 
     private static string SafeFullPath(string path)
     {

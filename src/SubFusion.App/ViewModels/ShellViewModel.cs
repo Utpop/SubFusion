@@ -14,7 +14,6 @@ namespace SubFusion.App.ViewModels;
 /// </summary>
 public sealed partial class ShellViewModel : ObservableObject
 {
-    private readonly IUiServices _ui;
     private readonly AppSettings _settings;
     private readonly TaskCenter _tasks;
     private readonly SemaphoreSlim _detectGate = new(1, 1);
@@ -25,7 +24,6 @@ public sealed partial class ShellViewModel : ObservableObject
 
     public ShellViewModel(IUiServices ui, AppSettings settings, TaskCenter tasks)
     {
-        _ui = ui;
         _settings = settings;
         _tasks = tasks;
 

@@ -205,8 +205,12 @@ public sealed class VideoMergeEngine
                 : MergePlan.Create(options, bundles, streamCopy || remuxOnly, _tools.Capabilities);
             notices.AddRange(plan.Notes);
             diagnostics.Add("[方案] " + plan.Describe());
+            // 记住这条提示的下标：一旦核实不过退回全量重编码，它就不再成立，必须撤回。
+            // 不撤回的话界面会同时显示「已保留 N 段原样」与「已改为全量重编码」两句互斥的话。
+            int partialNoticeIndex = -1;
             if (partial.IsPartial)
             {
+                partialNoticeIndex = notices.Count;
                 notices.Add("已保留 " + partial.ReferenceIndices.Count + " 段原样，仅重编码 " +
                             partial.ReencodeIndices.Count + " 段参数不一致的输入");
                 diagnostics.Add("[部分重编码] " + partial.Describe());
@@ -215,6 +219,20 @@ public sealed class VideoMergeEngine
             List<string> titles = ChapterTitles(options, bundles);
             List<double> durations = bundles.Select(b => Math.Max(0, b.Duration)).ToList();
             double totalDuration = durations.Sum();
+
+            // 时长未知（视频流与容器都没写 duration，TS / 裸流 / 部分 MKV 常见）会让整条链静默失效：
+            // 进度分母为 0（进度条永远停在起点）、章节被压成 1 毫秒、
+            // OutputVerifier.CheckDuration 因 expected<=0 直接放行（时长断言形同关闭）。
+            // 这里明确失败，而不是产出一个「看起来成功、其实什么都没校验」的结果。
+            for (int i = 0; i < bundles.Count; i++)
+            {
+                if (durations[i] > 0) continue;
+                return Fail(taskId, MergeStage.Probing,
+                    "无法确定输入文件的时长：" + Path.GetFileName(bundles[i].Path) +
+                    "。容器与视频流都没有写时长（TS / 裸流常见），合并后的进度、章节与时长校验都会失真，" +
+                    "请先用 ffmpeg 转封装成带时长的 MP4/MKV 再合并。",
+                    diagnostics, startedAt, notices);
+            }
 
             // 4) 需要时逐段统一编码（中间文件始终放在本任务临时目录）
             var segmentPaths = new List<string>();
@@ -330,6 +348,8 @@ public sealed class VideoMergeEngine
                     // 核实不过就退回全量重编码。「以为统一了、其实没统一」产出的坏文件
                     // 比多花点时间重编码糟得多，所以这里不做任何宽容。
                     diagnostics.Add("[部分重编码] 核实未通过，退回全量重编码：" + string.Join("；", verifyIssues));
+                    if (partialNoticeIndex >= 0 && partialNoticeIndex < notices.Count)
+                        notices.RemoveAt(partialNoticeIndex);
                     notices.Add("重编码结果与保留段仍不一致，已自动改为全量重编码（" +
                                 verifyIssues[0] + "）");
                     segmentPaths.Clear();
@@ -489,12 +509,14 @@ public sealed class VideoMergeEngine
                 {
                     Report(MergeStage.Verifying, 97, "检查各段接缝…", 0, seams.Count);
                     cancellationToken.ThrowIfCancellationRequested();
-                    // OutputVerifier 不接受 CancellationToken：用带 token 的 Task.Run 包装，
-                    // 取消时立即抛出，不让用户等待整条校验链跑完。
-                    Task<List<string>> seamTask = Task.Run(
-                        () => OutputVerifier.CheckSeamsAsync(_tools.Ffmpeg, tempOutput, seams, 120),
-                        cancellationToken);
-                    List<string> seamIssues = await seamTask.ConfigureAwait(false);
+                    // 注意：Task.Run(..., token) 只在「任务尚未开始」时生效，
+                    // 已经开始的任务不会因为 token 被取消而停下。
+                    // 因此这里用 WaitAsync 只取消**等待**，让用户立刻收到取消，
+                    // 后台的校验进程会自行跑完（每个接缝各自有 120 秒上限）。
+                    // 真正要紧的是别让界面卡在「正在校验」上等它。
+                    Task<List<string>> seamTask = OutputVerifier.CheckSeamsAsync(
+                        _tools.Ffmpeg, tempOutput, seams, 120);
+                    List<string> seamIssues = await seamTask.WaitAsync(cancellationToken).ConfigureAwait(false);
                     cancellationToken.ThrowIfCancellationRequested();
                     issues.AddRange(seamIssues);
                     if (seamIssues.Count == 0)
@@ -502,9 +524,9 @@ public sealed class VideoMergeEngine
                 }
 
                 cancellationToken.ThrowIfCancellationRequested();
-                Task<List<string>> integrity = Task.Run(
-                    () => OutputVerifier.CheckIntegrityAsync(_tools.Ffmpeg, tempOutput, 90), cancellationToken);
-                List<string> integrityIssues = await integrity.ConfigureAwait(false);
+                List<string> integrityIssues = await OutputVerifier
+                    .CheckIntegrityAsync(_tools.Ffmpeg, tempOutput, 90)
+                    .WaitAsync(cancellationToken).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
                 issues.AddRange(integrityIssues);
 
@@ -512,11 +534,11 @@ public sealed class VideoMergeEngine
                 // 头尾抽样只解「最后 2 秒」并看解码器报不报错，尾部数据整体缺失时它是安静的，
                 // 因此「抽样没告警」不能当作「文件完整」。这一项看的是真解出来多少内容。
                 issues.AddRange(await OutputVerifier.CheckContentEndAsync(
-                    _tools.Ffmpeg, tempOutput, actualDuration).ConfigureAwait(false));
+                    _tools.Ffmpeg, tempOutput, actualDuration).WaitAsync(cancellationToken).ConfigureAwait(false));
             }
             if (issues.Count > 0)
                 return Fail(taskId, MergeStage.Verifying, "输出校验未通过：" + string.Join("；", issues),
-                    diagnostics, startedAt);
+                    diagnostics, startedAt, notices);
 
             // 8) 校验通过后才落到最终路径，任何失败都不会污染用户目录
             long expectedOutputBytes = 0;
@@ -604,7 +626,7 @@ public sealed class VideoMergeEngine
                     // 校验不通过：绝不删源，按失败上报，输出文件保留供用户检查。
                     return Fail(taskId, MergeStage.Verifying,
                         "输出未通过删源前校验，已保留源文件：" + string.Join("；", issues),
-                        diagnostics, startedAt);
+                        diagnostics, startedAt, notices);
                 }
 
                 diagnostics.Add("[删源] 抽样解码 + 字节数校验通过，开始删除源文件");
@@ -665,7 +687,7 @@ public sealed class VideoMergeEngine
         catch (Exception ex)
         {
             diagnostics.Add("[异常] " + ex);
-            return Fail(taskId, MergeStage.Failed, ex.Message, diagnostics, startedAt);
+            return Fail(taskId, MergeStage.Failed, ex.Message, diagnostics, startedAt, notices);
         }
         finally
         {
@@ -728,14 +750,21 @@ public sealed class VideoMergeEngine
         return systemTemp;
     }
 
+    /// <summary>
+    /// 构造失败结果。<paramref name="notices"/> 必须传进来：
+    /// 失败路径同样装配了「多音轨只取第一条」「源文件删除失败」这类提示，
+    /// 丢掉它们会让用户只看到一句错误、看不到与之并列的事实。
+    /// </summary>
     private static MergeResult Fail(string taskId, MergeStage stage, string error,
-                                    List<string> diagnostics, double startedAt)
+                                    List<string> diagnostics, double startedAt,
+                                    List<string>? notices = null)
         => new()
         {
             TaskId = taskId,
             Status = MergeStatus.Failed,
             Stage = stage,
             Error = error,
+            Notices = notices ?? new List<string>(),
             Diagnostics = diagnostics,
             ElapsedSeconds = Formatting.UnixNow() - startedAt,
         };

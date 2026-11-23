@@ -213,7 +213,13 @@ public static class GroupFolderPlanner
         string cleaned = sb.ToString().Trim().TrimEnd('.', ' ');
         if (cleaned.Length == 0) cleaned = "未命名";
         // 超长名字在 Windows 上会直接失败；给后缀（_2 之类）留出空间。
-        return cleaned.Length > 96 ? cleaned[..96].TrimEnd('.', ' ') : cleaned;
+        if (cleaned.Length <= 96) return cleaned;
+        // 不能直接 Substring(0, 96)：UTF-16 的下标可能正好落在代理对中间，
+        // 切出来的孤立半代理是不合法字符串，后面 CreateDirectory / File.Move
+        // 会抛 ArgumentException，整组被静默跳过（emoji 文件名就会踩到）。
+        int cut = 96;
+        if (char.IsHighSurrogate(cleaned[cut - 1])) cut--;
+        return cleaned[..cut].TrimEnd('.', ' ');
     }
 
     /// <summary>
@@ -237,7 +243,12 @@ public static class GroupFolderPlanner
             if (!used.Contains(candidate) && (existing is null || !existing.Contains(candidate)))
                 return candidate;
         }
-        return name;
+        // 1000 次都撞名时绝不能返回已知冲突的 name：调用方会把它当成唯一名，
+        // 结果要么计划里出现两个同名目录，要么两个源文件映射到同一个目标文件名，
+        // 后者在 File.Move(overwrite:false) 上必然失败并被吞成一条提示。
+        // 这里改用 GUID 后缀，保证「一定唯一」这个契约。
+        return string.Format(CultureInfo.InvariantCulture, "{0}_{1}{2}",
+            stem, Guid.NewGuid().ToString("N")[..8], ext);
     }
 
     /// <summary>

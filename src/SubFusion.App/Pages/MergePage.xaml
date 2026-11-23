@@ -141,27 +141,27 @@
                                 </Grid.ColumnDefinitions>
 
                                 <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
-                                    <TextBlock Text="{x:Bind FileName}" TextTrimming="CharacterEllipsis"
-                                               ToolTipService.ToolTip="{x:Bind Path}" />
-                                    <TextBlock Text="{x:Bind Error}" Style="{StaticResource CaptionStyle}"
+                                    <TextBlock Text="{x:Bind FileName, Mode=OneWay}" TextTrimming="CharacterEllipsis"
+                                               ToolTipService.ToolTip="{x:Bind Path, Mode=OneWay}" />
+                                    <TextBlock Text="{x:Bind Error, Mode=OneWay}" Style="{StaticResource CaptionStyle}"
                                                Foreground="{ThemeResource StatusDangerBrush}"
                                                TextTrimming="CharacterEllipsis"
-                                               Visibility="{x:Bind Failed, Converter={StaticResource BoolToVisible}}" />
+                                               Visibility="{x:Bind Failed, Mode=OneWay, Converter={StaticResource BoolToVisible}}" />
                                 </StackPanel>
 
-                                <TextBlock Grid.Column="1" Text="{x:Bind Resolution}"
+                                <TextBlock Grid.Column="1" Text="{x:Bind Resolution, Mode=OneWay}"
                                            Style="{StaticResource CaptionStyle}" VerticalAlignment="Center" />
-                                <TextBlock Grid.Column="2" Text="{x:Bind DurationText}"
+                                <TextBlock Grid.Column="2" Text="{x:Bind DurationText, Mode=OneWay}"
                                            Style="{StaticResource CaptionStyle}" VerticalAlignment="Center" />
 
                                 <StackPanel Grid.Column="3" VerticalAlignment="Center" Spacing="2">
-                                    <TextBlock Text="{x:Bind CodecText}" Style="{StaticResource CaptionStyle}"
+                                    <TextBlock Text="{x:Bind CodecText, Mode=OneWay}" Style="{StaticResource CaptionStyle}"
                                                TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Text="{x:Bind FrameRateText}" Style="{StaticResource CaptionStyle}" />
+                                    <TextBlock Text="{x:Bind FrameRateText, Mode=OneWay}" Style="{StaticResource CaptionStyle}" />
                                 </StackPanel>
 
                                 <StackPanel Grid.Column="4" VerticalAlignment="Center" Spacing="3">
-                                    <TextBlock Text="{x:Bind AudioText}" Style="{StaticResource CaptionStyle}"
+                                    <TextBlock Text="{x:Bind AudioText, Mode=OneWay}" Style="{StaticResource CaptionStyle}"
                                                TextTrimming="CharacterEllipsis" />
                                     <TextBox Text="{x:Bind ChapterTitle, Mode=TwoWay}" FontSize="12"
                                              PlaceholderText="章节标题" />

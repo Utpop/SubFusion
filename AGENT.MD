@@ -59,7 +59,7 @@ SubFusion/
     │   │   ├── VideoMergeEngine.cs   #     编排：校验→探测→判定→编码→拼接→章节→校验
     │   │   └── VideoMergeTask.cs     #     对外任务接口（RunAsync / AnalyzeAsync / ProbeAsync）
     │   ├── Compress/                 #   ★ 视频压制（独立模块，不复用裁剪/合并执行路径）
-    │   │   ├── HardwareEncoder.cs    #     编码器真实可用性探测（真编码 3 帧才判定）+ 选择策略
+    │   │   ├── VideoEncoder.cs      #     编码器真实可用性探测（真编码 3 帧才判定）+ 三后端参数集
     │   │   ├── VideoCompressOptions.cs #   参数对象（格式/编码器偏好/码率/缩放/帧率/音频）
     │   │   ├── CompressCommandBuilder.cs # 命令与滤镜链构造（硬件 CQP / 软件 CRF 两套参数）
     │   │   ├── CompressResult.cs     #     结果模型（编码器/硬解硬编标记/体积/诊断）
@@ -358,7 +358,7 @@ $env:TMP = $tmp; $env:TEMP = $tmp
 
 ## 6. 测试
 
-`SelfTest` 是唯一测试入口。完整模式 **625 项断言**，全部通过：
+`SelfTest` 是唯一测试入口。完整模式 **640 项断言**，全部通过：
 
 | 分组 | 内容 |
 | --- | --- |
@@ -379,7 +379,7 @@ $env:TMP = $tmp; $env:TEMP = $tmp
 | P | 输入截断检测与收尾（含「可读终点未知时不下判断」） |
 | Q | 输出搬运与进度可见性（同卷改名 / 跨卷带进度复制 / 取消清理） |
 | S | 无损组合分配到文件夹 |
-| T | 视频压制（36 项）：编码器真实探测、软/硬编码选择策略、命令形状、真实压制、拒绝覆盖、结构守卫 |
+| T | 视频压制（40 项）：编码器真实探测与缓存、软/硬编码选择策略、**三个硬件后端各自的参数集**、命令形状、真实压制、拒绝覆盖、结构守卫 |
 
 G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine），不依赖任何外部视频文件。
 测试素材显式用 `setparams` 写 BT.709 标记，否则同一批素材的色彩字段会是「未知」，兼容性判定无法对齐。
@@ -449,7 +449,15 @@ G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine）�
   `sync_outdir`、`keep_existing_subs`、`keep_metadata`、`convert_encoding`、`hard_multi`、
   `verify`、`replace_source`、`overwrite`、`threshold`、`recursive`
 - 视频合并：`merge_container`、`merge_allow_reencode`、`merge_codec`、`merge_crf`、`merge_preset`、
-  `merge_fit`、`merge_audio`、`merge_chapters`、`merge_verify`、`merge_outdir`
+  `merge_fit`、`merge_audio`、`merge_chapters`、`merge_verify`、`merge_delete_source`、
+  `merge_partial_reencode`、`merge_auto_fallback`、`merge_salvage`、`merge_outdir`
+- 视频裁剪：`trim_container`、`trim_mode`、`trim_rotation`、`trim_codec`、`trim_crf`、
+  `trim_preset`、`trim_verify`、`trim_outdir`
+- 视频压制：`compress_container`、`compress_codec`、`compress_encoder`、`compress_backend`、
+  `compress_hw_quality`、`compress_quality`、`compress_rate_control`、`compress_bitrate`、
+  `compress_preset`、`compress_resize`、`compress_long_edge`、`compress_fps`、
+  `compress_reencode_audio`、`compress_audio_bitrate`、`compress_hw_decode`、`compress_verify`、
+  `compress_outdir`
 - 会话：`last_dir`
 
 `AppConfig` 读入的未知键会原样保留并写回（不丢失用户手工添加的字段）。
@@ -503,7 +511,7 @@ G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine）�
   不要用在线工具手转 ico：自带脚本保证 16/20/24/32 都有独立帧，Windows 才会在高 DPI 下取到清晰帧。
   改完必须重新发布——PE 资源是链接期写入的，旧 exe 不会自己变。
 - **改视频压制**：`VideoCompressEngine` 是唯一编排点，`CompressCommandBuilder` 是唯一命令出口，
-  `HardwareEncoder.ProbeAsync` 是唯一「编码器到底能不能用」的判定。三条必须保持：
+  `VideoEncoder.ProbeAsync` 是唯一「编码器到底能不能用」的判定（结果按 ffmpeg 路径缓存）。三条必须保持：
   ① 探测必须真的编码 3 帧（`-frames:v 3`），只看 `-encoders` 列表会把「有编码器但没有显卡」判成可用；
      探测尺寸固定 320x240——AMF 的 HEVC 在 256x144 以下会失败，用 64x64 探测会误判本机可用的 hevc_amf；
   ② 硬件与软件的参数集不能混用：硬件用 `-quality/-rc cqp/-qp_*`，软件用 `-preset/-crf`，混用直接 Invalid argument；
@@ -577,6 +585,51 @@ G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine）�
   界面若在容差外不吸附，就会出现「标尺显示 5.3s、实际从 2.0s 开始」的所见非所得。
 - **裁剪区间归一只有一处**：`VideoTrimOptions.NormalizeRange(duration)` 同时供 Validate、
   `TrimCommandBuilder`、引擎与 `VideoTrimViewModel.RefreshPlan` 使用，三处各算一遍必然分叉。
+- **三个硬件后端的参数集互不通用，必须走 `VideoEncoder` 的统一出口**（2026-11 实测，同一台机器）：
+  ```
+  AMF  ：-quality balanced -rc cqp        -qp_i/-qp_p/-qp_b   ✅
+  NVENC：-preset p4       -rc constqp     -qp                 ✅   ← -rc cqp 会 "Unable to parse" 并以 -22 退出
+  QSV  ：-preset medium   -global_quality                     ✅   ← 没有 -rc/-qp_* 私有选项，传了只是被静默忽略
+  ```
+  三者的 preset 名称也不同：AMF 只有 balanced/speed/quality，NVENC 是 p1–p7（旧名 slow/medium 仍可用），
+  QSV 是 veryfast…veryslow。`-quality` 只有 AMF 认。码率模式下 `-rc` 同样分家：
+  NVENC 只认 vbr（写 vbr_peak 同样 EINVAL），QSV 干脆不带 `-rc`，AMF 用 vbr_peak。
+  **判据**：改完必须用 `ffmpeg ... -f null -` 真跑一遍并检查 stderr 里有没有
+  `Unable to parse` / `has not been used for any stream`——后者表示参数被静默丢弃、画质完全不受控。
+  T10a–T10d 用例守着这条。
+- **编码器探测结果按 ffmpeg 路径缓存**（`VideoEncoder.ProbeCache`）：8 个候选各真编码 3 帧，
+  本机实测合计约 1.5 秒；不缓存时「分析 → 开始」会各跑一次。缓存只在完整探测成功后写入，
+  中途取消不会把「不可用」钉进去；换 ffmpeg 路径自然是新的 key。`ClearProbeCache()` 供自检复位。
+- **mp4 装不下文本字幕的原始码流**：`-c copy` / `-c:s copy` 下 ffmpeg 报
+  `Could not find tag for codec subrip in stream #N` 并以 -22 退出。裁剪与压制都必须在
+  mp4 时把字幕单独转成 `mov_text`（视频/音频仍可逐比特复制），而不是只拦图形字幕。
+  字幕侧 `CommandBuilder` 一直是对的，别把那边当成参照改反了。
+- **非方形像素（SAR ≠ 1:1）必须先归一到显示空间再适配**：`MergePlan.GeometryParts` 的顺序是
+  `scale=trunc(iw*sar/2)*2:ih` → `setsar=1` → 按显示画布 `scale/pad/crop` → 必要时压回存储尺寸 + `setsar=N/D`。
+  两个历史坑都不能再犯：
+  ① 先 `setsar=1` 再对**存储尺寸**缩放，等于按 3:2 而不是真实的 20:11 去适配（画面被横向拉宽）；
+  ② 容器侧 `-aspect` 会**反算并覆盖**滤镜里的 `setsar`——实测请求 40:33、产出却是 15:22/DAR 40:33。
+  实测：修复前 720x480 SAR 40:33 的素材合并后是 `SAR 15:22 / DAR 40:33`；
+  修复后是 `SAR 40:33 / DAR 20:11`，与源一致。G50–G54 用例守着这条。
+- **「时长未知」不能当 0 处理**：TS / 裸流 / 部分 MKV 的视频流与容器都不写 duration 时，
+  进度分母为 0（进度条不动）、章节被压成 1 毫秒、`CheckDuration` 因 `expected<=0` 直接放行。
+  `VideoMergeEngine` 现在会在探测阶段明确失败；`ChapterTimeline.Build` 也不再无脑把长度抬成 1 毫秒。
+- **`Task.Run(..., token)` 不是取消**：它只在任务**尚未开始**时生效。校验链里的
+  `CheckSeamsAsync`/`CheckIntegrityAsync`/`CheckContentEndAsync` 一律用 `WaitAsync(token)`
+  只取消等待——用户点停止后界面立刻返回，后台进程自行跑完（各自有超时上限）。
+- **`FfmpegTools` 取消时也必须带上 Ffmpeg 路径**：三个引擎都是「先查 `Available` 再判取消」，
+  留空会让用户点取消后看到「未找到 ffmpeg，无法合并视频」这种假故障。
+- **`InputIntegrity` 的 -1 是「不知道」，不是「没有包」**：扫包超时/出错返回 -1 时不能再做全量扫包
+  （慢盘上那是另一次 180 秒），也不能把 `ReadableSeconds` 记成 0——那会把完好大文件判成截断。
+- **`GroupFolderExporter.Ok` 不能只看「建了几个文件夹」**：文件夹建成功但一个文件都没搬过去时
+  （目标同名已存在、目标不可写），旧实现 `Ok=true` 且 `Error` 为空，界面说「共 0 个文件，0 B」。
+  现在要求 `FilesMoved > 0`；取消时还会清掉「一个文件都没搬进去」的空目录，已搬文件的目录原样保留。
+- **超长文件名截断不能按 UTF-16 下标硬切**：第 96 位落在代理对中间会切出孤立半代理，
+  `CreateDirectory`/`File.Move` 抛 `ArgumentException`，整组被静默跳过（emoji 文件名会踩到）。
+  `MakeUnique` 撞满 1000 次也不能返回已知冲突的名字，改用 GUID 后缀。
+- **失败结果同样要带 Notices**：`MergeEngine.Fail` 有一个可选的 `notices` 参数，
+  删源前校验失败等分支必须传进去，否则「多音轨只取第一条」这类提示会连同失败一起消失。
+  部分重编码退回全量时，那条「已保留 N 段原样」的提示必须撤回（否则与「已改为全量重编码」两句并存）。
 - **提交前必跑**：`dotnet build --no-incremental` + 完整自检 + 单 EXE 发布。
 
 ---

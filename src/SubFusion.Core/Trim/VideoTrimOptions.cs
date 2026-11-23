@@ -65,9 +65,26 @@ public sealed class VideoTrimOptions
     /// <summary>是否保留字幕轨。默认关闭：字幕时间轴不会跟着重写，保留反而容易错位。</summary>
     public bool KeepSubtitles { get; set; }
 
-    /// <summary>精确模式的视频编码器。</summary>
+    /// <summary>
+    /// 精确模式的视频编码器。
+    /// 软件：libx264 / libx265；硬件：h264_nvenc / hevc_nvenc / h264_amf / hevc_amf / h264_qsv / hevc_qsv。
+    /// 可选值由 <see cref="VideoEncoder.CandidateNames"/> 与本机真实可用性共同决定
+    /// （硬件编码器必须先探测才能判定，不能只看 ffmpeg -encoders 列表）。
+    /// </summary>
     public string VideoCodec { get; set; } = "libx264";
+
+    /// <summary>
+    /// 编码速度/质量档。软件侧是 x264 preset 名（medium/slow…），
+    /// 硬件侧是 balanced/speed/quality——两套名字不能互换，
+    /// 由 <see cref="VideoEncoder.AppendPreset"/> 按编码器类型分流。
+    /// </summary>
     public string Preset { get; set; } = "medium";
+
+    /// <summary>
+    /// 画质（CRF 语义，0-51，越小越清晰）。硬件编码时由
+    /// <see cref="VideoEncoder.HardwareQp"/> 换算成 QP（+6 偏移），
+    /// 使同一个数字在软硬件之间大体等价。
+    /// </summary>
     public int Crf { get; set; } = 20;
 
     /// <summary>精确模式的音频编码器与码率。</summary>

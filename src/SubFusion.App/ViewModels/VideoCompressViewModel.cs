@@ -179,12 +179,16 @@ public sealed partial class VideoCompressViewModel : ObservableObject
         }
         finally
         {
+            // 只有「当前这一代」才有权熄灭加载指示。
+            // 连续切换输入时，上一代的 finally 会晚于下一代启动才执行；
+            // 无条件写 Analyzing = false 会把新一代刚点亮的加载状态抹掉，
+            // 界面于是显示「B 的文件名 + A 的参数」，开始按钮也已可用。
             if (ReferenceEquals(_analyzeSource, cts))
             {
                 _analyzeSource = null;
                 cts.Dispose();
+                _ui.RunOnUiThread(() => Analyzing = false);
             }
-            _ui.RunOnUiThread(() => Analyzing = false);
         }
     }
 
@@ -411,7 +415,7 @@ public sealed partial class VideoCompressViewModel : ObservableObject
         }
 
         List<EncoderKind>? backends = ResolveBackends();
-        EncoderAvailability? selected = HardwareEncoder.Select(_encoders, Codec, EncoderPreference, backends);
+        EncoderAvailability? selected = VideoEncoder.Select(_encoders, Codec, EncoderPreference, backends);
 
         List<EncoderAvailability> usableHardware = _encoders
             .Where(e => e.Usable && e.Kind != EncoderKind.Software).ToList();
@@ -640,7 +644,7 @@ public sealed partial class VideoCompressViewModel : ObservableObject
 
     /// <summary>
     /// 重新计算「本次会用什么编码器 / 缩到多大 / 体积大概多少」。
-    /// 与引擎共用同一套 Core 判定（HardwareEncoder.Select），
+    /// 与引擎共用同一套 Core 判定（VideoEncoder.Select），
     /// 界面不允许自己猜一个和引擎不同的结论。
     /// </summary>
     private void RefreshPlan()
@@ -651,6 +655,9 @@ public sealed partial class VideoCompressViewModel : ObservableObject
             PlanText = "";
             PlanDetail = "";
             EstimateText = "";
+            // 输入不可读时也要清掉上一条错误：否则换了文件之后，
+            // 「无法开始压制」里仍挂着与当前文件无关的旧编码器报错。
+            PlanError = "";
             StartCommand.NotifyCanExecuteChanged();
             return;
         }
@@ -658,7 +665,7 @@ public sealed partial class VideoCompressViewModel : ObservableObject
         VideoCompressOptions options = BuildOptions();
 
         List<EncoderKind>? backends = ResolveBackends();
-        EncoderAvailability? encoder = HardwareEncoder.Select(_encoders, Codec, EncoderPreference, backends);
+        EncoderAvailability? encoder = VideoEncoder.Select(_encoders, Codec, EncoderPreference, backends);
         if (encoder is null)
         {
             HasPlan = false;

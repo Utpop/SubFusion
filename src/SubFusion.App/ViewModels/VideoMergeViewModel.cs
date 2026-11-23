@@ -348,6 +348,9 @@ public sealed partial class VideoMergeViewModel : ObservableObject
             HasReasons = false;
             ReasonTitle = "";
             ReasonIntro = "";
+            // 列表被清空时也必须熄灭加载指示：此前 Analyzing 已被置 true 的话，
+            // 这里不回落就会让页面上的 ProgressRing 一直转下去（永远等不到结果）。
+            Analyzing = false;
             return;
         }
         Analyzing = true;
@@ -358,6 +361,9 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     {
         if (Inputs.Count == 0)
         {
+            // 先取消在飞的分析再退：否则旧分析返回后仍会走 ApplyBundleInfo/ApplyAnalysis，
+            // 把「无损拼接」之类的结论写回一个已经没有任何输入的页面。
+            CancelAnalyze();
             MarkAnalysisStale();
             return;
         }
@@ -647,26 +653,35 @@ public sealed partial class VideoMergeViewModel : ObservableObject
 
             _ui.RunOnUiThread(() =>
             {
-                Groups.Clear();
-                int index = 1;
-                foreach (MergeGroup group in result.Groups.Where(g => g.Items.Count > 1))
+                // RunOnUiThread 的实现会吞掉 lambda 内的异常（只写崩溃日志），
+                // 因此 Grouping 必须在这里 finally 复位：漏掉一次就是按钮永久失效 +
+                // 进度圈永转，用户除了重启没有别的恢复手段。
+                try
                 {
-                    var vm = new MergeGroupViewModel
+                    Groups.Clear();
+                    int index = 1;
+                    foreach (MergeGroup group in result.Groups.Where(g => g.Items.Count > 1))
                     {
-                        Title = "组合 " + index++,
-                        Signature = group.Signature,
-                        KindText = group.KindText,
-                        ReasonText = group.ReasonText,
-                        CountText = group.Items.Count + " 个 · 合计 " + group.TotalDurationText,
-                    };
-                    foreach (MediaBundle b in group.Items) vm.Files.Add(Path.GetFileName(b.Path));
-                    vm.NotifyFilesChanged();
-                    Groups.Add(vm);
-                }
+                        var vm = new MergeGroupViewModel
+                        {
+                            Title = "组合 " + index++,
+                            Signature = group.Signature,
+                            KindText = group.KindText,
+                            ReasonText = group.ReasonText,
+                            CountText = group.Items.Count + " 个 · 合计 " + group.TotalDurationText,
+                        };
+                        foreach (MediaBundle b in group.Items) vm.Files.Add(Path.GetFileName(b.Path));
+                        vm.NotifyFilesChanged();
+                        Groups.Add(vm);
+                    }
 
-                HasGroups = Groups.Count > 0;
-                GroupSummary = BuildGroupSummary(result);
-                Grouping = false;
+                    HasGroups = Groups.Count > 0;
+                    GroupSummary = BuildGroupSummary(result);
+                }
+                finally
+                {
+                    Grouping = false;
+                }
             });
         }
         catch (Exception ex)
@@ -675,6 +690,22 @@ public sealed partial class VideoMergeViewModel : ObservableObject
             GroupSummary = "分组失败：" + ex.Message;
             if (showDialog) await _ui.ShowErrorAsync(GroupSummary);
         }
+    }
+
+    /// <summary>
+    /// 最近一次分组结果是否仍然对应当前输入列表。
+    /// 逐项比对「分组里出现的文件」与当前输入：既比数量也比成员，
+    /// 任何一个方向变了都要求重新识别。
+    /// </summary>
+    private bool GroupingMatchesInputs()
+    {
+        if (_lastGrouping is null) return false;
+        var grouped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string path in _lastGrouping.Groups.SelectMany(g => g.Items.Select(i => i.Path)))
+            grouped.Add(path);
+        var current = new HashSet<string>(
+            Inputs.Select(i => i.Path), StringComparer.OrdinalIgnoreCase);
+        return grouped.SetEquals(current);
     }
 
     private string BuildGroupSummary(MergeGroupingResult result)
@@ -719,8 +750,10 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         // 分组结果必须与当前输入列表一致。
         // 用户改了输入却不重新识别时，导出的会是上一批文件的组合——
         // 那等于把过期结论当成事实写进文件夹里。
-        int currentFiles = Inputs.Count;
-        if (_lastGrouping.GroupedCount > currentFiles)
+        // 注意不能只比数量、也不能只比一个方向：新增文件和拖拽重排都能让
+        // 数量相等或变多，却让 _lastGrouping 里的路径与当前列表完全对不上，
+        // 而导出会对这些路径执行真正的 File.Move。
+        if (!GroupingMatchesInputs())
         {
             await _ui.ShowInfoAsync("输入列表已经变化，请重新点「识别无损组合」再导出。");
             return;
@@ -1543,6 +1576,11 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     private void FinishRecord(TaskState state, string message)
     {
         if (_record is null) return;
+        // 取消路径会 finish 两次：Cancel() 里先把记录切到「已取消」，
+        // 随后 Core 抛 OperationCanceledException 又会走到这里。
+        // 没有终态守卫时第二次会重写 FinishedAt，任务中心的「用时」被凭空拉长。
+        // 裁剪页与压制页早已有同样的守卫，这里补齐以保持一致。
+        if (_record.State is TaskState.Completed or TaskState.Failed or TaskState.Cancelled) return;
         TaskRecord record = _record;
         _tasks.Update(record, r => r.Result = null);
         _tasks.Finish(record, state,

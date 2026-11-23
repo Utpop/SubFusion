@@ -1,4 +1,5 @@
 using System.Globalization;
+using SubFusion.Core.Media;
 using SubFusion.Core.Models;
 
 namespace SubFusion.Core.Services;
@@ -197,13 +198,23 @@ public static class CommandBuilder
         else
         {
             cmd.AddRange(new[] { "-c:v", vcodec });
-            if (vcodec is "libx264" or "libx265" or "h264_nvenc" or "hevc_nvenc")
+
+            // 软件与硬件的参数集完全不同，混用会让 ffmpeg 直接报 Invalid argument。
+            // 这里统一走共享的 VideoEncoder（三个硬件后端各自的选项名互不相同）：
+            //   · 软件 → -preset medium / -crf 20
+            //   · AMF  → -quality balanced / -rc cqp -qp_i/p/b（CRF 按 +6 换算成 QP）
+            //   · NVENC→ -preset p4 / -rc constqp -qp（写 -rc cqp 会 EINVAL）
+            //   · QSV  → -preset medium / -global_quality（没有 -rc/-qp_* 私有选项）
+            (EncoderKind kind, _) = VideoEncoder.Classify(vcodec);
+            // 只有"认识的 264/265 家族"才补编码参数：用户手工填了别的编码器名时
+            // 原样透传，不猜测它的参数语法。
+            bool knownFamily = vcodec.Contains("264", StringComparison.Ordinal)
+                            || vcodec.Contains("265", StringComparison.Ordinal)
+                            || vcodec.Contains("hevc", StringComparison.OrdinalIgnoreCase);
+            if (knownFamily)
             {
-                cmd.AddRange(new[] { "-preset", options.Preset });
-                if (vcodec is "libx264" or "libx265")
-                    cmd.AddRange(new[] { "-crf", options.Crf.ToString(CultureInfo.InvariantCulture) });
-                else
-                    cmd.AddRange(new[] { "-rc", "vbr", "-cq", options.Crf.ToString(CultureInfo.InvariantCulture) });
+                VideoEncoder.AppendPreset(cmd, kind, options.Preset);
+                VideoEncoder.AppendQuality(cmd, kind, options.Crf);
             }
             cmd.AddRange(new[] { "-pix_fmt", "yuv420p" });
         }

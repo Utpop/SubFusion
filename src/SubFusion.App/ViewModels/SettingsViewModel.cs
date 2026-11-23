@@ -395,6 +395,12 @@ public sealed partial class SettingsViewModel : ObservableObject
         _settings.MergeAudio = "Auto";
         _settings.MergeChapters = true;
         _settings.MergeVerify = true;
+        // 这四个是不可逆/破坏性开关，漏掉它们会让「恢复出厂」名不副实：
+        // 用户勾过「校验通过后删除源文件」之后重置，源文件仍会被删。
+        _settings.MergeDeleteSource = false;
+        _settings.MergePartialReencode = true;
+        _settings.MergeAutoFallback = false;
+        _settings.MergeSalvage = true;
 
         _settings.Save(); // flush all batched resets in one write
         Reload();

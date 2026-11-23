@@ -40,9 +40,6 @@ public static class FrameGrabber
             "pipe:1",
         };
 
-        ProcessCapture? unused = null;   // 说明：这里不使用文本捕获，见下方说明
-        _ = unused;
-
         var psi = ProcessUtil.MakeStartInfo(ffmpeg, args);
         System.Diagnostics.Process process;
         try

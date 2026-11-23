@@ -25,8 +25,11 @@ public sealed class FfmpegTools
     {
         string resolvedFfmpeg = !string.IsNullOrEmpty(ffmpeg) ? ffmpeg! : (ToolLocator.FindFfmpeg() ?? "");
         string? resolvedFfprobe = !string.IsNullOrEmpty(ffprobe) ? ffprobe : ToolLocator.FindFfprobe();
+        // 取消时也要带上 Ffmpeg 路径。
+        // 三个引擎都是「先查 Available，再判断取消」：Ffmpeg 留空会让 Available=false，
+        // 用户点取消后看到的却是「未找到 ffmpeg，无法合并视频」这种假故障。
         if (cancellationToken.IsCancellationRequested)
-            return new FfmpegTools { Ffprobe = resolvedFfprobe, AvailabilityError = "已取消" };
+            return new FfmpegTools { Ffmpeg = resolvedFfmpeg, Ffprobe = resolvedFfprobe, AvailabilityError = "已取消" };
         if (resolvedFfmpeg.Length == 0)
             return new FfmpegTools { Ffprobe = resolvedFfprobe, AvailabilityError = "未找到 ffmpeg" };
 
@@ -44,7 +47,8 @@ public sealed class FfmpegTools
         catch (OperationCanceledException)
         {
             // 遵守"不抛异常"契约：取消也返回带 AvailabilityError 的结果对象。
-            return new FfmpegTools { Ffprobe = resolvedFfprobe, AvailabilityError = "已取消" };
+            // 同样必须带上 Ffmpeg，否则调用方会把「已取消」判成「未找到 ffmpeg」。
+            return new FfmpegTools { Ffmpeg = resolvedFfmpeg, Ffprobe = resolvedFfprobe, AvailabilityError = "已取消" };
         }
         catch (Exception ex)
         {

@@ -44,8 +44,13 @@ public static class ChapterTimeline
         for (int i = 0; i < segmentDurations.Count; i++)
         {
             long startMs = cursorMs;
-            long lengthMs = Math.Max(1, (long)Math.Round(Math.Max(0, segmentDurations[i]) * scale * 1000.0,
-                                                         MidpointRounding.AwayFromZero));
+            long lengthMs = (long)Math.Round(Math.Max(0, segmentDurations[i]) * scale * 1000.0,
+                                             MidpointRounding.AwayFromZero);
+            // 时长探测为 0 的输入（TS / 裸流 / 缺时长元数据的 MKV）会算出 0 长度。
+            // 不能在这里无脑抬成 1 毫秒：那会写出一批「1 毫秒章节」，
+            // 用户看到的是 N 个挤在时间轴起点、毫无意义的条目。
+            // 真正的处理是「这段时长未知」，由引擎在调用前拒绝这种输入（见 VideoMergeEngine）。
+            if (lengthMs <= 0 && segmentDurations[i] > 0) lengthMs = 1;
             long endMs = startMs + lengthMs;
             string title = titles is not null && i < titles.Count && !string.IsNullOrWhiteSpace(titles[i])
                 ? titles[i].Trim()

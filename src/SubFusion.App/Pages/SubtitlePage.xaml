@@ -136,26 +136,26 @@
                                     <ColumnDefinition Width="64" />
                                 </Grid.ColumnDefinitions>
 
-                                <TextBlock Grid.Column="0" Text="{x:Bind Name}" TextTrimming="CharacterEllipsis"
-                                           VerticalAlignment="Center" ToolTipService.ToolTip="{x:Bind FullPath}" />
-                                <TextBlock Grid.Column="1" Text="{x:Bind DurationText}"
+                                <TextBlock Grid.Column="0" Text="{x:Bind Name, Mode=OneWay}" TextTrimming="CharacterEllipsis"
+                                           VerticalAlignment="Center" ToolTipService.ToolTip="{x:Bind FullPath, Mode=OneWay}" />
+                                <TextBlock Grid.Column="1" Text="{x:Bind DurationText, Mode=OneWay}"
                                            Style="{StaticResource CaptionStyle}" VerticalAlignment="Center" />
-                                <TextBlock Grid.Column="2" Text="{x:Bind Resolution}"
+                                <TextBlock Grid.Column="2" Text="{x:Bind Resolution, Mode=OneWay}"
                                            Style="{StaticResource CaptionStyle}" VerticalAlignment="Center" />
-                                <TextBlock Grid.Column="3" Text="{x:Bind SubsText}"
+                                <TextBlock Grid.Column="3" Text="{x:Bind SubsText, Mode=OneWay}"
                                            Style="{StaticResource CaptionStyle}" VerticalAlignment="Center"
                                            TextTrimming="CharacterEllipsis" />
 
                                 <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6"
                                             VerticalAlignment="Center">
-                                    <FontIcon Glyph="{x:Bind StateGlyph}" FontSize="12"
-                                              Foreground="{x:Bind StateTag, Converter={StaticResource StateTagToBrush}}" />
-                                    <TextBlock Text="{x:Bind StateText}" Style="{StaticResource CaptionStyle}"
-                                               Foreground="{x:Bind StateTag, Converter={StaticResource StateTagToBrush}}"
+                                    <FontIcon Glyph="{x:Bind StateGlyph, Mode=OneWay}" FontSize="12"
+                                              Foreground="{x:Bind StateTag, Mode=OneWay, Converter={StaticResource StateTagToBrush}}" />
+                                    <TextBlock Text="{x:Bind StateText, Mode=OneWay}" Style="{StaticResource CaptionStyle}"
+                                               Foreground="{x:Bind StateTag, Mode=OneWay, Converter={StaticResource StateTagToBrush}}"
                                                TextTrimming="CharacterEllipsis" />
                                 </StackPanel>
 
-                                <TextBlock Grid.Column="5" Text="{x:Bind ProgressText}"
+                                <TextBlock Grid.Column="5" Text="{x:Bind ProgressText, Mode=OneWay}"
                                            Style="{StaticResource CaptionStyle}" VerticalAlignment="Center" />
                             </Grid>
                         </DataTemplate>

@@ -25,7 +25,7 @@ public static class CompressCommandBuilder
     /// </summary>
     /// <param name="options">任务参数。</param>
     /// <param name="bundle">源文件探测结果。</param>
-    /// <param name="encoder">已选定的编码器（来自 <see cref="HardwareEncoder.Select"/>）。</param>
+    /// <param name="encoder">已选定的编码器（来自 <see cref="VideoEncoder.Select"/>）。</param>
     /// <param name="ffmpeg">ffmpeg 可执行文件路径。</param>
     /// <param name="renderPath">渲染用的临时文件路径（最终落盘由引擎负责）。</param>
     public static List<string> Build(VideoCompressOptions options, MediaBundle bundle,
@@ -51,7 +51,12 @@ public static class CompressCommandBuilder
         // 流选择：视频必选；音频与字幕按源文件实际存在的轨道映射，用 ? 保证缺失时不失败。
         cmd.AddRange(new[] { "-map", "0:v:0" });
         if (bundle.HasAudio) cmd.AddRange(new[] { "-map", "0:a:0" });
-        if (options.KeepSubtitles && !(toMp4 && bundle.BitmapSubtitleCount > 0))
+        // mp4 装不下文本字幕原码流："-c:s copy" 下 ffmpeg 会报
+        // Could not find tag for codec subrip in stream #N ... Invalid argument（-22）。
+        // 引擎只拦了图形字幕，文本字幕仍会被映射进来，用户只看到「压制失败」。
+        // 因此 mp4 时映射照旧，但字幕单独转成 mov_text。
+        bool mapSubtitles = options.KeepSubtitles && !(toMp4 && bundle.BitmapSubtitleCount > 0);
+        if (mapSubtitles)
             cmd.AddRange(new[] { "-map", "0:s?" });
 
         // 视频编码参数。
@@ -76,7 +81,8 @@ public static class CompressCommandBuilder
             cmd.AddRange(new[] { "-an" });
         }
 
-        if (options.KeepSubtitles) cmd.AddRange(new[] { "-c:s", "copy" });
+        // mp4 没有 subrip/ass 的 tag，只能转 mov_text；mkv 原样复制即可。
+        if (mapSubtitles) cmd.AddRange(new[] { "-c:s", toMp4 ? "mov_text" : "copy" });
 
         // 源文件可能带负时间戳（TS 抓流常见）。mp4 无法表示负时间戳，
         // 不加这一项时音频起点会被整体前移，造成音画不同步且不报错。
@@ -103,49 +109,29 @@ public static class CompressCommandBuilder
         var args = new List<string> { "-c:v", encoder.Name };
         bool hardware = encoder.Kind != EncoderKind.Software;
 
-        if (hardware)
-        {
-            // 硬件编码统一用 CQP / VBR：这两档在所有 AMF/NVENC/QSV 版本上都存在。
-            args.AddRange(new[] { "-quality", NormalizeHardwareQuality(options.HardwareQuality) });
-            if (options.RateControl == RateControl.Bitrate)
-            {
-                string kbps = options.TargetBitrateKbps.ToString(CultureInfo.InvariantCulture) + "k";
-                args.AddRange(new[] { "-rc", "vbr_peak", "-b:v", kbps, "-maxrate", kbps });
-            }
-            else
-            {
-                // CQP：I/P/B 帧量化参数。Qp 与 x264 的 CRF 不同量纲：
-                // 同一个数字下 AMF 明显更糊（本机实测 720p 6s 素材，qp 24 出 2.6MB、qp 32 出 0.9MB，
-                // 而 x264 crf 23 约 1.1MB）。因此按 +6 偏移映射，让界面上的「画质」滑杆
-                // 在软硬件之间大体等价，避免用户切到显卡加速后发现画面明显变差。
-                string qp = Math.Clamp(options.Quality + 6, 0, 51).ToString(CultureInfo.InvariantCulture);
-                args.AddRange(new[] { "-rc", "cqp",
-                                      "-qp_i", qp, "-qp_p", qp, "-qp_b", qp });
-            }
+        // preset 与画质参数一律走共享的 VideoEncoder：三个硬件后端的选项名互不兼容，
+        // 各自在模块里拼一份必然出现「某个后端直接 EINVAL、另一个后端参数被静默忽略」。
+        VideoEncoder.AppendPreset(args, encoder.Kind, options.HardwareQuality);
 
-            // HEVC 硬件编码默认 8bit；源是 10bit 时要求编码器输出 10bit，否则会静默降位深。
-            if (encoder.Codec == VideoCodecKind.Hevc && options.Quality >= 0)
-                args.AddRange(new[] { "-profile:v", "main" });
-            else if (encoder.Codec == VideoCodecKind.H264)
-                args.AddRange(new[] { "-profile:v", "high" });
+        if (options.RateControl == RateControl.Bitrate)
+        {
+            VideoEncoder.AppendBitrate(args, encoder.Kind, options.TargetBitrateKbps);
         }
         else
         {
-            args.AddRange(new[] { "-preset", NormalizePreset(options.Preset) });
-            if (options.RateControl == RateControl.Bitrate)
-            {
-                string kbps = options.TargetBitrateKbps.ToString(CultureInfo.InvariantCulture) + "k";
-                args.AddRange(new[] { "-b:v", kbps, "-maxrate", kbps,
-                                      "-bufsize", (options.TargetBitrateKbps * 2).ToString(CultureInfo.InvariantCulture) + "k" });
-            }
-            else
-            {
-                args.AddRange(new[] { "-crf", options.Quality.ToString(CultureInfo.InvariantCulture) });
-            }
+            // 界面画质档是 CRF 语义；硬件侧的 +6 偏移换算也在 VideoEncoder 里统一完成。
+            VideoEncoder.AppendQuality(args, encoder.Kind, options.Quality);
+        }
 
+        if (hardware)
+        {
+            // HEVC 硬件编码默认 8bit；源是 10bit 时要求编码器输出 10bit，否则会静默降位深。
+            VideoEncoder.AppendHardwareProfile(args, encoder.Codec);
+        }
+        else if (encoder.Codec == VideoCodecKind.Hevc)
+        {
             // 10bit 源用 10bit 编码器保留色深（x264 的 10bit 构建才支持，按命名探测）。
-            if (encoder.Codec == VideoCodecKind.Hevc)
-                args.AddRange(new[] { "-x265-params", "log-level=error" });
+            args.AddRange(new[] { "-x265-params", "log-level=error" });
         }
         return args;
     }
@@ -224,25 +210,17 @@ public static class CompressCommandBuilder
     }
 
     /// <summary>
-    /// 界面画质档（CRF 语义）→ 硬件编码的 QP。见 <see cref="Build"/> 里的实测数据。
+    /// 界面画质档（CRF 语义）→ 硬件编码的 QP。
+    /// 实现已上移到共享的 <see cref="VideoEncoder.HardwareQp"/>：裁剪与硬字幕要用同一套换算，
+    /// 三处各写一份迟早分叉。
     /// </summary>
-    public static int HardwareQp(int quality) => Math.Clamp(quality + 6, 0, 51);
+    public static int HardwareQp(int quality) => VideoEncoder.HardwareQp(quality);
 
-    /// <summary>硬件质量档：AMF 用 balanced/speed/quality，NVENC/QSV 也接受同一组名称。</summary>
-    public static string NormalizeHardwareQuality(string? value) => (value ?? "").Trim().ToLowerInvariant() switch
-    {
-        "speed" => "speed",
-        "quality" => "quality",
-        "high_quality" => "quality",     // NVENC 没有 high_quality 档，降级到 quality
-        _ => "balanced",
-    };
+    /// <summary>硬件质量档：实现见 <see cref="VideoEncoder.NormalizeHardwareQuality"/>。</summary>
+    public static string NormalizeHardwareQuality(string? value) => VideoEncoder.NormalizeHardwareQuality(value);
 
-    public static string NormalizePreset(string? value) => (value ?? "").Trim().ToLowerInvariant() switch
-    {
-        "ultrafast" or "veryfast" or "faster" or "fast" or "medium" or "slow" or "slower" or "veryslow"
-            => value!.Trim().ToLowerInvariant(),
-        _ => "medium",
-    };
+    /// <summary>软件 preset 白名单：实现见 <see cref="VideoEncoder.NormalizePreset"/>。</summary>
+    public static string NormalizePreset(string? value) => VideoEncoder.NormalizePreset(value);
 
     /// <summary>码率模式下按目标码率与时长估算输出体积（字节）；用于界面预估。</summary>
     public static long EstimateBytes(VideoCompressOptions options, double durationSeconds)

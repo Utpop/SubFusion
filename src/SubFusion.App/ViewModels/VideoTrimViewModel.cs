@@ -137,6 +137,10 @@ public sealed partial class VideoTrimViewModel : ObservableObject
                 await task.AnalyzeAsync(InputPath, cts.Token);
             if (cts.IsCancellationRequested) return;
 
+            // 编码器探测与媒体分析共用同一个取消令牌：用户换文件时探测也应作废。
+            await RefreshEncodersAsync(cts.Token);
+            if (cts.IsCancellationRequested) return;
+
             _bundle = bundle;
             _keyframes = keyframes;
             _sourceRotation = rotation;
@@ -187,12 +191,16 @@ public sealed partial class VideoTrimViewModel : ObservableObject
         }
         finally
         {
+            // 只有「当前这一代」才有权熄灭加载指示。
+            // 连续切换输入时，上一代的 finally 会晚于下一代启动才执行；
+            // 无条件写 Analyzing = false 会把新一代刚点亮的加载状态抹掉，
+            // 界面于是显示「B 的文件名 + A 的参数」，开始按钮也已可用。
             if (ReferenceEquals(_analyzeSource, cts))
             {
                 _analyzeSource = null;
                 cts.Dispose();
+                _ui.RunOnUiThread(() => Analyzing = false);
             }
-            _ui.RunOnUiThread(() => Analyzing = false);
         }
     }
 
@@ -217,6 +225,54 @@ public sealed partial class VideoTrimViewModel : ObservableObject
                 a.Codec.ToUpperInvariant(), a.SampleRate / 1000.0, a.Channels);
         string space = Formatting.FormatSize(bundle.Container.Size);
         return video + "\n" + audio + " · 时长 " + FormatTime(bundle.Duration) + " · " + space;
+    }
+
+    /// <summary>
+    /// 探测本机可用的视频编码器，刷新下拉框。
+    ///
+    /// 必须在载入媒体之后、用户真正点「开始裁剪」之前完成：
+    /// 硬件编码器的可用性只能靠真编码一次来判定，放在开始按钮里做会让用户
+    /// 先等一次探测、然后才发现自己选的编码器不可用。
+    /// 探测失败（没有 ffmpeg）时保持软件保底项，不影响无损裁剪。
+    /// </summary>
+    private async Task RefreshEncodersAsync(CancellationToken cancellationToken)
+    {
+        if (_encoders is not null) return;
+
+        string ffmpeg = _settings.FfmpegPath;
+        if (string.IsNullOrEmpty(ffmpeg)) return;
+
+        try
+        {
+            _encoders = await VideoEncoder.ProbeAsync(ffmpeg, cancellationToken);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { return; }
+
+        if (cancellationToken.IsCancellationRequested) return;
+
+        _ui.RunOnUiThread(() =>
+        {
+            var names = new List<string>();
+            // 软件编码器保底：即使探测一个都没过，也不能让用户无编码器可选。
+            names.Add("libx264");
+            names.Add("libx265");
+            foreach (EncoderAvailability e in _encoders)
+            {
+                if (!e.Usable) continue;
+                if (e.Kind == EncoderKind.Software) continue;
+                names.Add(e.Name);
+            }
+
+            Codecs = names;
+            if (!names.Contains(Codec)) Codec = "libx264";
+
+            int hardware = _encoders.Count(e => e.Usable && e.Kind != EncoderKind.Software);
+            // 代码内部用行首缩进描述结论；这里只给用户一句话。
+            EncoderHint = hardware > 0
+                ? "检测到 " + hardware + " 个可用的显卡编码器：精确裁剪时可选用它们加速（无损裁剪本来就不编码）。"
+                : "未检测到可用的显卡编码器，精确裁剪将使用 CPU 编码。";
+        });
     }
 
     private async Task<VideoTrimTask?> EnsureTaskAsync(CancellationToken cancellationToken)
@@ -305,6 +361,10 @@ public sealed partial class VideoTrimViewModel : ObservableObject
     {
         SelectedMode = Modes.FirstOrDefault(m => m.Value == value) ?? Modes[0];
         OnPropertyChanged(nameof(IsPrecise));
+        // SnapToKeyframes 依赖 Mode：不通知它，TrimPage 就收不到属性变更，
+        // Timeline.SnapEnabled 会停在旧值——切到「精确切割」后拖动条仍在吸附关键帧，
+        // 用户以为能精确到帧却拖不到位；反向切回无损模式则失去吸附。
+        OnPropertyChanged(nameof(SnapToKeyframes));
         RefreshPlan();
     }
 
@@ -347,13 +407,47 @@ public sealed partial class VideoTrimViewModel : ObservableObject
         RefreshPlan();
     }
 
-    public IReadOnlyList<string> Codecs { get; } = new[] { "libx264", "libx265" };
+    /// <summary>
+    /// 可选的精确模式编码器。
+    ///
+    /// 候选来自两处：本机真实探测出的可用编码器（<see cref="VideoEncoder.ProbeAsync"/>），
+    /// 加上软件保底项。硬件编码器必须先真的编码一次才能判定可用——
+    /// 只看 ffmpeg -encoders 列表会把「有这个编码器但没有显卡」当成可用，
+    /// 用户选完才在真正开始时失败。
+    ///
+    /// 无损模式（Copy）不编码，这一项在界面上是禁用的。
+    /// </summary>
+    [ObservableProperty] private IReadOnlyList<string> codecs = new[] { "libx264", "libx265" };
+
+    [ObservableProperty] private IReadOnlyList<string> presets = DefaultPresets;
+
+    private static readonly string[] DefaultPresets =
+        { "ultrafast", "veryfast", "fast", "medium", "slow", "veryslow" };
+
+    private static readonly string[] HardwareQualities = { "balanced", "speed", "quality" };
+
+    /// <summary>编码器探测结果缓存：同一台机器一次会话内只需探测一次。</summary>
+    private IReadOnlyList<EncoderAvailability>? _encoders;
+
+    [ObservableProperty] private string encoderHint = "";
+
     [ObservableProperty] private string codec = "libx264";
     [ObservableProperty] private double crf = 20;
     [ObservableProperty] private string preset = "medium";
 
-    public IReadOnlyList<string> Presets { get; } =
-        new[] { "ultrafast", "veryfast", "fast", "medium", "slow", "veryslow" };
+    partial void OnCodecChanged(string value)
+    {
+        // 软件是 x264 preset 名，硬件是 balanced/speed/quality——不能混用。
+        bool hardware = VideoEncoder.IsHardware(value);
+        Presets = hardware ? HardwareQualities : DefaultPresets;
+        if (!Presets.Contains(Preset)) Preset = Presets[0];
+        // 硬件编码器的"画质"是 QP，同一个数字比 CRF 更糊/更糊的换算由 Core 做，
+        // 界面上只需如实说明，避免用户以为切到显卡后画质完全不变。
+        EncoderHint = hardware
+            ? "使用显卡编码：速度快很多，同画质下的体积通常比 CPU 编码略大。"
+            : "";
+        RefreshPlan();
+    }
 
     [ObservableProperty] private bool verifyOutput = true;
     [ObservableProperty] private bool overwrite = true;
@@ -621,7 +715,10 @@ public sealed partial class VideoTrimViewModel : ObservableObject
         try
         {
             OutputPath = Path.Combine(dir, name);
-            PlanError = "";
+            // 这里不能无条件清空 PlanError：用户是在「区间非法」导致 PlanError 有内容时
+            // 才去改输出目录的，清掉它会让界面变回「无提示 + 开始按钮永久灰」。
+            // 重新跑一次完整计划计算，让区间合法性重新决定 PlanError 与 CanStart。
+            RefreshPlan();
         }
         catch (Exception ex)
         {

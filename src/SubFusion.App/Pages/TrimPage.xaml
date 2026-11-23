@@ -280,6 +280,15 @@
                                            IsEnabled="{x:Bind ViewModel.IsPrecise, Mode=OneWay}" />
                             </StackPanel>
                         </Grid>
+
+                        <!--
+                            编码器可用性必须如实展示：硬件编码器是「真的编过一次」才出现在下拉框里的，
+                            用户需要知道本机到底有没有显卡加速，而不是自己猜为什么少了几个选项。
+                        -->
+                        <TextBlock Text="{x:Bind ViewModel.EncoderHint, Mode=OneWay}"
+                                   Style="{StaticResource CaptionStyle}"
+                                   TextWrapping="Wrap"
+                                   Visibility="{x:Bind ViewModel.EncoderHint, Mode=OneWay, Converter={StaticResource NotEmptyToVisible}}" />
                     </StackPanel>
                 </Border>
 

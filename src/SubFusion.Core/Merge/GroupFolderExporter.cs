@@ -67,6 +67,9 @@ public static class GroupFolderExporter
 
         var notices = new List<string>();
         var created = new List<string>();
+        // 每个已建目录里实际搬进去的文件数。取消时要据此清掉「一个文件都没有」的空目录：
+        // 用户按了取消，却留下几个只含说明文件的文件夹，既占位置又让人以为搬过一部分。
+        var movedPerFolder = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         int filesMoved = 0;
         int filesCopied = 0;
         long bytesMoved = 0;
@@ -85,6 +88,8 @@ public static class GroupFolderExporter
             };
         }
 
+        try
+        {
         for (int fi = 0; fi < plan.Folders.Count; fi++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -129,6 +134,8 @@ public static class GroupFolderExporter
                     }
                     filesMoved++;
                     bytesMoved += file.Bytes;
+                    movedPerFolder[item.FolderPath] =
+                        (movedPerFolder.TryGetValue(item.FolderPath, out int already) ? already : 0) + 1;
                 }
                 catch (OperationCanceledException)
                 {
@@ -157,17 +164,51 @@ public static class GroupFolderExporter
             progress?.Report(new GroupFolderProgress(fi + 1, plan.Folders.Count, item.FolderName,
                 item.Files.Count, item.Files.Count, "", (fi + 1) * 100.0 / plan.Folders.Count));
         }
+        }
+        catch (OperationCanceledException)
+        {
+            // 取消时把「一个文件都没搬进去」的目录清掉；已经搬了文件的目录必须原样保留，
+            // 否则用户会在源和目标之间两头找不到文件。清不掉的只记提示，不掩盖取消。
+            var removedDirs = new List<string>();
+            foreach (string dir in created)
+            {
+                int moved = movedPerFolder.TryGetValue(dir, out int n) ? n : 0;
+                if (moved > 0) continue;
+                try
+                {
+                    if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+                    removedDirs.Add(Path.GetFileName(dir));
+                }
+                catch { /* 清不掉不影响取消结论 */ }
+            }
+            if (removedDirs.Count > 0)
+                notices.Add("已取消，并清理了 " + removedDirs.Count + " 个空文件夹：" +
+                            string.Join("、", removedDirs));
+            throw;
+        }
 
+        // Ok 不能只看「建了几个文件夹」：文件夹建成功、里面一个文件都没搬过去时，
+        // SummaryText 会输出「已把 N 个组合移动到各自的文件夹（共 0 个文件，0 B）」而 Error 为空，
+        // 用户以为成功了，实际一个文件都没动。至少要有一个文件真的落位才算成功。
+        bool ok = filesMoved > 0;
+        string error = "";
+        if (!ok)
+        {
+            error = created.Count == 0
+                ? "没有任何组合被处理：" + string.Join("；", notices)
+                : "已创建 " + created.Count + " 个文件夹，但没有任何文件被移动过去：" +
+                  string.Join("；", notices);
+        }
         return new GroupFolderResult
         {
-            Ok = created.Count > 0,
+            Ok = ok,
             TargetRoot = plan.TargetRoot,
             FoldersCreated = created.Count,
             FilesMoved = filesMoved,
             FilesCopied = filesCopied,
             BytesMoved = bytesMoved,
             FolderPaths = created,
-            Error = created.Count > 0 ? "" : "没有任何组合被处理：" + string.Join("；", notices),
+            Error = error,
             Notices = notices,
         };
     }

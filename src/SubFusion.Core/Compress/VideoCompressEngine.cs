@@ -37,7 +37,7 @@ public sealed class VideoCompressEngine
     {
         MediaBundle bundle = await MediaInspector.InspectAsync(_tools.Ffprobe ?? "", inputPath,
             cancellationToken).ConfigureAwait(false);
-        IReadOnlyList<EncoderAvailability> encoders = await HardwareEncoder
+        IReadOnlyList<EncoderAvailability> encoders = await VideoEncoder
             .ProbeAsync(_tools.Ffmpeg, cancellationToken).ConfigureAwait(false);
         return (bundle, encoders);
     }
@@ -121,7 +121,7 @@ public sealed class VideoCompressEngine
 
             // 3) 选编码器
             Report(CompressStage.Probing, 5, "检测可用编码器…");
-            IReadOnlyList<EncoderAvailability> available = await HardwareEncoder
+            IReadOnlyList<EncoderAvailability> available = await VideoEncoder
                 .ProbeAsync(_tools.Ffmpeg, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -181,7 +181,7 @@ public sealed class VideoCompressEngine
         }
 
         List<EncoderKind>? backends = options.AllowedBackends.Count > 0 ? options.AllowedBackends : null;
-        EncoderAvailability? selected = HardwareEncoder.Select(available, options.Codec,
+        EncoderAvailability? selected = VideoEncoder.Select(available, options.Codec,
                                                                options.EncoderPreference, backends);
 
         if (selected is null && backends is not null &&
@@ -190,7 +190,7 @@ public sealed class VideoCompressEngine
             // 限定后端但那个后端不可用：不该直接失败，应给出可解释的提示后回落到软件编码。
             string names = string.Join("/", backends.Select(BackendName));
             notices.Add("已限定的编码后端（" + names + "）在本机不可用，已改用 CPU 软件编码");
-            selected = HardwareEncoder.Select(available, options.Codec, "software");
+            selected = VideoEncoder.Select(available, options.Codec, "software");
         }
 
         if (selected is null) return null;
@@ -248,7 +248,7 @@ public sealed class VideoCompressEngine
                 return (Fail(taskId, CompressStage.Encoding,
                     FfmpegDiagnostics.Describe("编码失败：" + error, error), diagnostics, startedAt), current);
 
-            EncoderAvailability? fallback = HardwareEncoder.SoftwareFallback(available, options.Codec);
+            EncoderAvailability? fallback = VideoEncoder.SoftwareFallback(available, options.Codec);
             if (fallback is null || fallback.Name == current.Name)
                 return (Fail(taskId, CompressStage.Encoding,
                     FfmpegDiagnostics.Describe("编码失败：" + error, error), diagnostics, startedAt), current);

@@ -465,6 +465,48 @@ internal static class Program
               subtitlePage is not null &&
               subtitlePage.Contains(@"SyncOutputDir, Mode=TwoWay", StringComparison.Ordinal));
 
+        // 列表行模板的 x:Bind 必须显式带 Mode=OneWay。
+        //
+        // x:Bind 的默认 Mode 是 OneTime：只在模板建好、DataContext 落地时取值一次，
+        // 不订阅 INotifyPropertyChanged。行对象（SubtitleRowViewModel / MergeInputViewModel /
+        // TaskRecord）在主流程里是「同一个实例原地刷新」（row.Refresh() / ObservableProperty），
+        // 集合本身不发生增删，所以 OneTime 绑定永远不会重取——
+        // 表现正是「总进度条在走（它是 OneWay），但每一行永远停在『待处理』、进度恒为 0」。
+        // 生成的 .g.cs 里也不会有任何 PropertyChanged += 订阅，XAML 编译期完全不报错，
+        // 只能靠这条结构断言兜住。TaskCenterPage 的 Progress/ProgressText 早就写了 OneWay，
+        // 它正常刷新；字幕页与合并页漏写，于是只有它们不刷新。
+        foreach (var (pageFile, pageName) in new[]
+                 {
+                     ("SubtitlePage.xaml", "字幕页"),
+                     ("MergePage.xaml", "合并页"),
+                     ("TaskCenterPage.xaml", "任务中心页"),
+                 })
+        {
+            string? content = FindAppFile(Path.Combine("Pages", pageFile));
+            if (content is null)
+            {
+                Check($"{pageName}：文件存在，可做列表行绑定检查", false);
+                continue;
+            }
+
+            // 只检查 DataTemplate 内部（页面级绑定本来就有显式 Mode，或是一次性命令引用）。
+            int templateStart = content.IndexOf("<DataTemplate", StringComparison.Ordinal);
+            string templateRegion = templateStart >= 0 ? content[templateStart..] : "";
+            int templateEnd = templateRegion.IndexOf("</DataTemplate>", StringComparison.Ordinal);
+            if (templateEnd >= 0) templateRegion = templateRegion[..templateEnd];
+
+            var oneTime = System.Text.RegularExpressions.Regex
+                .Matches(templateRegion, @"\{x:Bind\s+(?<path>[A-Za-z_][\w.]*)\s*(?<modes>(,\s*[^}]*)?)\}")
+                .Where(m => !m.Groups["modes"].Value.Contains("Mode=", StringComparison.Ordinal))
+                .Select(m => m.Groups["path"].Value)
+                .Distinct()
+                .ToArray();
+
+            Check($"{pageName}：列表行绑定带 Mode=OneWay（否则行状态永远停在初始值）",
+                  oneTime.Length == 0,
+                  oneTime.Length == 0 ? "全部显式声明" : "默认 OneTime 的绑定：" + string.Join("、", oneTime));
+        }
+
         // MVVM 边界：ViewModel 不引用 WinUI，业务页面 code-behind 不出现 ffmpeg 命令拼装
         string root = FindAppRoot() ?? "";
         var viewModelFiles = Directory.Exists(Path.Combine(root, "ViewModels"))
@@ -1037,7 +1079,46 @@ internal static class Program
                 MediaBundle mixInfo = await MediaInspector.InspectAsync(ffprobe, silentMerged);
                 Check("G29 混合输入输出保留单条音轨（用静音补齐）",
                       mixInfo.Audios.Count == 1, $"实际 {mixInfo.Audios.Count}");
-                Check("G30 混合输入输出时长≈两段之和",
+                // ---- 非方形像素（DVD/HDV 这种 anamorphic 素材）----
+            // 老实现先 setsar=1 再对存储尺寸缩放，等于按 3:2 而不是真实的 20:11 去适配；
+            // 末尾再套 setsar 与 -aspect 又会互相覆盖。实测产出 SAR 15:22 / DAR 40:33，
+            // 既不是源比例也不是目标比例，还会让「部分重编码」次次退回全量。
+            string anamorphic = Path.Combine(work, "anamorphic.mp4");
+            await ProcessUtil.RunAsync(ffmpeg, new[]
+            {
+                "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "testsrc2=s=720x480:r=25:d=2",
+                "-vf", "setsar=40/33", "-c:v", "libx264", "-preset", "ultrafast",
+                "-crf", "30", "-pix_fmt", "yuv420p", anamorphic,
+            }, 120);
+            MediaBundle anaSrc = await MediaInspector.InspectAsync(ffprobe, anamorphic);
+            Check("G50 非方形像素素材探测到 SAR 40:33",
+                  anaSrc.PrimaryVideo?.Sar == "40:33", anaSrc.PrimaryVideo?.Sar ?? "");
+            if (anaSrc.Success)
+            {
+                string anaOut = Path.Combine(work, "anamorphic_out.mkv");
+                MergeResult anaResult = await task.RunAsync(new VideoMergeOptions
+                {
+                    Inputs = new List<string> { anamorphic, anamorphic },
+                    OutputPath = anaOut,
+                    Container = "mkv", TargetWidth = 720, TargetHeight = 480,
+                    VerifyOutput = true,
+                });
+                Check("G51 非方形像素合并成功", anaResult.Ok, anaResult.Error);
+                if (anaResult.Ok)
+                {
+                    MediaBundle anaInfo = await MediaInspector.InspectAsync(ffprobe, anaOut);
+                    Check("G52 输出 SAR 精确写回为 40:33（不是 -aspect 反算的近似值）",
+                          anaInfo.PrimaryVideo?.Sar == "40:33", anaInfo.PrimaryVideo?.Sar ?? "");
+                    Check("G53 输出 DAR 保持源比例 20:11（画面不被压扁）",
+                          anaInfo.PrimaryVideo?.Dar == "20:11", anaInfo.PrimaryVideo?.Dar ?? "");
+                    Check("G54 输出存储尺寸仍为 720x480",
+                          anaInfo.PrimaryVideo?.Width == 720 && anaInfo.PrimaryVideo?.Height == 480,
+                          anaInfo.PrimaryVideo?.SizeText ?? "");
+                }
+            }
+
+            Check("G30 混合输入输出时长≈两段之和",
                       Math.Abs(mixInfo.Duration - (bundle.Duration + silentInfo.Duration)) < 0.6,
                       $"{mixInfo.Duration:F2}s");
             }
@@ -1918,6 +1999,13 @@ internal static class Program
             Equal("S3 空名字有兜底", "未命名", GroupFolderPlanner.Sanitize("   "));
             Check("S4 超长名字被截断（要给 _2 后缀留空间）",
                   GroupFolderPlanner.Sanitize(new string('x', 200)).Length <= 96);
+            // 按 UTF-16 下标直接截断会切裂代理对，切出来的孤立半代理让
+            // CreateDirectory / File.Move 抛 ArgumentException，整组被静默跳过。
+            string emojiName = new string('x', 95) + "😀😀😀";
+            string sanitized = GroupFolderPlanner.Sanitize(emojiName);
+            Check("S4a 超长名字截断不会切裂代理对（emoji 文件名不被丢）",
+                  sanitized.Length <= 96 && !char.IsHighSurrogate(sanitized[^1]),
+                  "len=" + sanitized.Length + " last=U+" + ((int)sanitized[^1]).ToString("X4"));
 
             // ---- 计划：每组一个文件夹，且互不重名 ----
             MediaBundle MakeBundle(string path, double seconds, long bytes = 1024)
@@ -2018,6 +2106,28 @@ internal static class Program
             Check("S19 移动有进度回调（跨盘搬运上 GB 不能没有反馈）",
                   progress.Count > 0 && Math.Abs(progress[^1] - 100.0) < 1e-6,
                   progress.Count == 0 ? "无回调" : "最后一次 " + progress[^1].ToString("0.#", CultureInfo.InvariantCulture));
+
+            // ---- 一个文件都没搬过去时不能报成功 ----
+            // 老实现用 created.Count > 0 判 Ok：只要文件夹建出来了就算成功，
+            // 哪怕里面一个文件都没动（目标同名文件已存在、目标不可写等），
+            // 界面会说「已把 N 个组合移动到各自的文件夹（共 0 个文件，0 B）」。
+            string blockDir = Path.Combine(work, "blocked");
+            Directory.CreateDirectory(blockDir);
+            string blockSrc = Path.Combine(work, "block_src.bin");
+            await File.WriteAllBytesAsync(blockSrc, new byte[64 * 1024]);
+            GroupFolderPlan blockPlan = BuildSingleFilePlan(
+                work, "blocked_group", blockSrc, "block_src.bin", 64 * 1024);
+            // 预先在目标位置放一个同名文件：File.Move(overwrite:false) 必然失败。
+            Directory.CreateDirectory(blockPlan.Folders[0].FolderPath);
+            await File.WriteAllBytesAsync(
+                Path.Combine(blockPlan.Folders[0].FolderPath, "block_src.bin"), new byte[8]);
+            GroupFolderResult blockResult = await GroupFolderExporter.ExecuteAsync(blockPlan);
+            Check("S21 一个文件都没搬成时必须报失败，而不是空提示的成功",
+                  !blockResult.Ok && blockResult.FilesMoved == 0,
+                  $"ok={blockResult.Ok} moved={blockResult.FilesMoved} err={blockResult.Error}");
+            Check("S22 失败原因里带上具体文件名（用户要知道是哪一个没搬动）",
+                  blockResult.Error.Contains("block_src.bin", StringComparison.Ordinal),
+                  blockResult.Error);
 
             // ---- 跨盘路径的安全线：核对大小通过后才删源 ----
             // 这一条不能靠"同盘改名"掩盖：同盘移动没有中间态，真正危险的是跨盘复制。
@@ -3336,9 +3446,9 @@ internal static class Program
                   listedButBroken.Count > 0 || encoders.All(e => e.Usable),
                   "判为不可用：" + string.Join("、", listedButBroken.Select(e => e.Name)));
 
-            EncoderAvailability? autoPick = HardwareEncoder.Select(encoders, VideoCodecKind.H264, "auto");
-            EncoderAvailability? softwarePick = HardwareEncoder.Select(encoders, VideoCodecKind.H264, "software");
-            EncoderAvailability? hardwarePick = HardwareEncoder.Select(encoders, VideoCodecKind.H264, "hardware");
+            EncoderAvailability? autoPick = VideoEncoder.Select(encoders, VideoCodecKind.H264, "auto");
+            EncoderAvailability? softwarePick = VideoEncoder.Select(encoders, VideoCodecKind.H264, "software");
+            EncoderAvailability? hardwarePick = VideoEncoder.Select(encoders, VideoCodecKind.H264, "hardware");
             Check("T5 software 偏好只会选到软件编码器",
                   softwarePick is not null && softwarePick.Kind == EncoderKind.Software);
             Check("T6 hardware 偏好不会退化成软件编码器",
@@ -3370,6 +3480,55 @@ internal static class Program
             Check("T10 硬件命令的 QP 按校准偏移换算（qp 不等于画质档原值）",
                   hwCmd.Contains(CompressCommandBuilder.HardwareQp(23).ToString(CultureInfo.InvariantCulture)) &&
                   CompressCommandBuilder.HardwareQp(23) != 23);
+
+            // T10a–T10d：三个硬件后端的私有选项名互不通用，必须各自成套。
+            // 这一组断言来自实测：本机 h264_nvenc 对 "-rc cqp" 报
+            // Unable to parse "rc" option value "cqp" 并以 -22(EINVAL) 退出；
+            // h264_qsv 没有 -rc/-qp_* 私有选项，传了只会被静默忽略（画质完全不受控）。
+            // 只断言"用了硬件编码器"是不够的——那三条错误命令同样能通过。
+            EncoderAvailability fakeNvenc = new()
+            {
+                Name = "h264_nvenc", Kind = EncoderKind.Nvenc, Codec = VideoCodecKind.H264, Usable = true,
+            };
+            List<string> nvCmd = CompressCommandBuilder.Build(options, bundle, fakeNvenc, ffmpeg, options.OutputPath);
+            Check("T10a NVENC 用 -rc constqp + 单值 -qp，不能用 AMF 的 -rc cqp / -qp_i",
+                  nvCmd.Contains("constqp") && nvCmd.Contains("-qp") &&
+                  !nvCmd.Contains("cqp") && !nvCmd.Contains("-qp_i") &&
+                  !nvCmd.Contains("-quality"),
+                  string.Join(" ", nvCmd));
+
+            EncoderAvailability fakeQsv = new()
+            {
+                Name = "h264_qsv", Kind = EncoderKind.Qsv, Codec = VideoCodecKind.H264, Usable = true,
+            };
+            List<string> qsvCmd = CompressCommandBuilder.Build(options, bundle, fakeQsv, ffmpeg, options.OutputPath);
+            Check("T10b QSV 用 -global_quality，不能用 -rc / -qp_* / -quality",
+                  qsvCmd.Contains("-global_quality") && !qsvCmd.Contains("-rc") &&
+                  !qsvCmd.Contains("-qp_i") && !qsvCmd.Contains("-quality"),
+                  string.Join(" ", qsvCmd));
+
+            Check("T10c 各后端 preset 名称落在自己的刻度上",
+                  CompressCommandBuilder.Build(options, bundle, fakeNvenc, ffmpeg, options.OutputPath)
+                      .Contains("p4") &&
+                  CompressCommandBuilder.Build(options, bundle, fakeQsv, ffmpeg, options.OutputPath)
+                      .Contains("medium") &&
+                  hwCmd.Contains("-quality"),
+                  "AMF=" + VideoEncoder.HardwarePreset(EncoderKind.Amf, "balanced") +
+                  " NVENC=" + VideoEncoder.HardwarePreset(EncoderKind.Nvenc, "balanced") +
+                  " QSV=" + VideoEncoder.HardwarePreset(EncoderKind.Qsv, "balanced"));
+
+            // 码率模式下 -rc 的取值同样按后端区分：NVENC 写 vbr_peak 同样会 EINVAL。
+            VideoCompressOptions bitrateOptions = options.Clone();
+            bitrateOptions.RateControl = RateControl.Bitrate;
+            bitrateOptions.TargetBitrateKbps = 2500;
+            List<string> nvBitrate = CompressCommandBuilder.Build(bitrateOptions, bundle, fakeNvenc, ffmpeg,
+                bitrateOptions.OutputPath);
+            List<string> qsvBitrate = CompressCommandBuilder.Build(bitrateOptions, bundle, fakeQsv, ffmpeg,
+                bitrateOptions.OutputPath);
+            Check("T10d 码率模式下 NVENC 用 -rc vbr、QSV 不带 -rc",
+                  nvBitrate.Contains("vbr") && !nvBitrate.Contains("vbr_peak") &&
+                  nvBitrate.Contains("-b:v") && !qsvBitrate.Contains("-rc") && qsvBitrate.Contains("-b:v"),
+                  "nvenc=" + string.Join(" ", nvBitrate) + " | qsv=" + string.Join(" ", qsvBitrate));
 
             EncoderAvailability fakeX264 = new()
             {
@@ -3465,7 +3624,9 @@ internal static class Program
             Check("T32 无音轨时不报错",
                   VideoCompressOptions.ValidateAudioCopy("mp4", "vorbis", false).Count == 0);
 
-            string? probeSource = FindCoreFile(Path.Combine("Compress", "HardwareEncoder.cs"));
+            // VideoEncoder 已上移到 Media/：它是三个业务模块共用的媒体基础设施，
+            // 不再只属于压制。路径必须跟着走，否则这条断言会静默变成"文件不存在"。
+            string? probeSource = FindCoreFile(Path.Combine("Media", "VideoEncoder.cs"));
             Check("T33 硬件探测真的启动一次编码（不是只读编码器列表）",
                   probeSource is not null &&
                   probeSource.Contains("-frames:v", StringComparison.Ordinal) &&

@@ -50,17 +50,32 @@ public static class TrimCommandBuilder
         // mp4 装不下 PGS/VobSub 这类图形字幕：-map 之后 ffmpeg 会以非 0 退出，
         // 用户看到的只是「切割失败」。这里提前拦下并说清楚原因，
         // 由引擎在 Validate 阶段之外给出可读提示（见 VideoTrimEngine 的字幕容器检查）。
-        if (options.KeepSubtitles && !(toMp4 && HasBitmapSubtitles(bundle)))
+        // mp4 同样装不下文本字幕（subrip/ass）的原码流："-c copy" 下 ffmpeg 会报
+        // Could not find tag for codec subrip in stream #N ... Invalid argument 并以 -22 退出。
+        // 引擎这一步只拦了图形字幕，文本字幕照样会被 -map 进来，用户只看到「切割失败」。
+        // 这里改为：mp4 时仍然映射字幕，但把字幕单独转成 mov_text（视频/音频仍可 copy）。
+        bool mapSubtitles = options.KeepSubtitles && !(toMp4 && HasBitmapSubtitles(bundle));
+        if (mapSubtitles)
             cmd.AddRange(new[] { "-map", "0:s?" });
 
         if (copying)
         {
             cmd.AddRange(new[] { "-c", "copy" });
+            // 无损模式默认全流 copy，但 mp4 容器没有 subrip/ass 的 tag。
+            // 只把字幕轨单独转成 mov_text：视频与音频仍然逐比特复制，画质不受影响。
+            if (toMp4 && mapSubtitles) cmd.AddRange(new[] { "-c:s", "mov_text" });
         }
         else
         {
-            cmd.AddRange(new[] { "-c:v", options.VideoCodec, "-preset", options.Preset,
-                                 "-crf", options.Crf.ToString(CultureInfo.InvariantCulture) });
+            // 精确模式要重编码，是裁剪里唯一吃 CPU 的地方（无损模式走 -c copy 不受影响）。
+            // 软件与硬件的参数集不能混用：软件是 -preset/-crf，硬件是 -quality/-rc cqp/-qp_*，
+            // 把 CRF 数值直接塞给硬件编码器会让画质与界面滑块脱节。
+            (EncoderKind kind, VideoCodecKind codecKind) = VideoEncoder.Classify(options.VideoCodec);
+            cmd.AddRange(new[] { "-c:v", options.VideoCodec });
+            VideoEncoder.AppendPreset(cmd, kind, options.Preset);
+            VideoEncoder.AppendQuality(cmd, kind, options.Crf);
+            if (kind != EncoderKind.Software)
+                VideoEncoder.AppendHardwareProfile(cmd, codecKind);
 
             // 旋转在精确模式下用 transpose 烘焙进像素。两种写法不能混用：
             // 既写 display_rotation 又做 transpose 会让播放器转两次。

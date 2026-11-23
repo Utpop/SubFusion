@@ -118,23 +118,23 @@
                                         <ColumnDefinition Width="110" />
                                     </Grid.ColumnDefinitions>
 
-                                    <FontIcon Grid.Column="0" Glyph="{x:Bind StateGlyph}" FontSize="14"
+                                    <FontIcon Grid.Column="0" Glyph="{x:Bind StateGlyph, Mode=OneWay}" FontSize="14"
                                               VerticalAlignment="Center"
-                                              Foreground="{x:Bind State, Converter={StaticResource TaskStateToBrush}}" />
+                                              Foreground="{x:Bind State, Mode=OneWay, Converter={StaticResource TaskStateToBrush}}" />
 
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
-                                        <TextBlock Text="{x:Bind Title}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Text="{x:Bind Stage}" Style="{StaticResource CaptionStyle}"
+                                        <TextBlock Text="{x:Bind Title, Mode=OneWay}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{x:Bind Stage, Mode=OneWay}" Style="{StaticResource CaptionStyle}"
                                                    TextTrimming="CharacterEllipsis" />
                                     </StackPanel>
 
-                                    <TextBlock Grid.Column="2" Text="{x:Bind KindText}"
+                                    <TextBlock Grid.Column="2" Text="{x:Bind KindText, Mode=OneWay}"
                                                Style="{StaticResource CaptionStyle}" VerticalAlignment="Center" />
 
                                     <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="6"
                                                 VerticalAlignment="Center">
-                                        <TextBlock Text="{x:Bind StateText}" FontSize="11"
-                                                   Foreground="{x:Bind State, Converter={StaticResource TaskStateToBrush}}" />
+                                        <TextBlock Text="{x:Bind StateText, Mode=OneWay}" FontSize="11"
+                                                   Foreground="{x:Bind State, Mode=OneWay, Converter={StaticResource TaskStateToBrush}}" />
                                     </StackPanel>
 
                                     <StackPanel Grid.Column="4" VerticalAlignment="Center" Spacing="3">

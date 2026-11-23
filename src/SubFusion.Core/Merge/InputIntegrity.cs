@@ -121,7 +121,13 @@ public static class InputIntegrity
         if (tail >= declared - 0.5)
             return new InputHealth(bundle.Path, declared, Math.Max(tail, 0));
 
-        // 尾部窗口是空的：要么被截断，要么容器的时长声明得离谱。
+        // 扫包超时 / 出错（返回 -1）与「窗口里确实没有包」是两件事，必须分开：
+        // 前者的结论是「不知道」，此时绝不能再做一次全量扫包（慢盘上那是另一次 180 秒），
+        // 更不能把 -1 当成「一个包都没有」——那会让完好大文件被判成截断。
+        if (tail < 0)
+            return new InputHealth(bundle.Path, declared, 0);
+
+        // 尾部窗口确实是空的：要么被截断，要么容器的时长声明得离谱。
         // 两种情况都得靠真实扫描给结论。
         double full = await LastPacketEndAsync(ffprobe, bundle, null, cancellationToken).ConfigureAwait(false);
         return new InputHealth(bundle.Path, declared, Math.Max(full, 0));

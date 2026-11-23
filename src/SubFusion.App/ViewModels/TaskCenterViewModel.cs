@@ -29,6 +29,13 @@ public sealed partial class TaskCenterViewModel : ObservableObject
         _tasks = tasks;
         _ui = ui;
         _tasks.Changed += (_, _) => Refresh();
+        // 运行中任务的「用时」每 2 秒重算一次；只刷新这一条投影，
+        // 不走 Refresh()（那会重建筛选列表并重算全部统计）。
+        _tasks.ElapsedTick += (_, _) =>
+        {
+            OnPropertyChanged(nameof(SelectedElapsed));
+            Selected?.RefreshDerived();
+        };
         Refresh();
     }
 
