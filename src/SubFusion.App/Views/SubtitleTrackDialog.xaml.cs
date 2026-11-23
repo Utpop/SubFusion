@@ -184,5 +184,45 @@ public sealed partial class SubtitleTrackDialog : ContentDialog
     private void OnPrimaryButtonClick(ContentDialog sender, ContentDialogButtonClickEventArgs args)
         => Result = _tracks;
 
+    /// <summary>自动化自检用：数据源条目数（不代表模板渲染成功）。</summary>
+    internal int CandidateCountForTest => CandidateList.Items.Count;
+
+    /// <summary>自动化自检用：已选字幕轨列表的条目数。</summary>
+    internal int SelectedCountForTest => SelectedList.Items.Count;
+
+    /// <summary>
+    /// 自动化自检用：强制走一遍布局，并返回**已实现的容器**数量。
+    ///
+    /// 只读 Items.Count 是数据源计数，即使模板完全解析失败也照样是 2，
+    /// 证明不了任何东西。必须真正 UpdateLayout 并去可视树里数 ListViewItem，
+    /// 才能暴露「模板实例化时抛 XamlParseFailed」这类错误。
+    /// </summary>
+    internal int RealizeForTest()
+    {
+        CandidateList.UpdateLayout();
+        SelectedList.UpdateLayout();
+        UpdateLayout();
+        return CountContainers(CandidateList) + CountContainers(SelectedList);
+    }
+
+    private static int CountContainers(DependencyObject root)
+    {
+        int count = 0;
+        var stack = new Stack<DependencyObject>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            DependencyObject node = stack.Pop();
+            int n = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(node);
+            for (int i = 0; i < n; i++)
+            {
+                DependencyObject child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(node, i);
+                if (child is ListViewItem) count++;
+                stack.Push(child);
+            }
+        }
+        return count;
+    }
+
     #endregion
 }

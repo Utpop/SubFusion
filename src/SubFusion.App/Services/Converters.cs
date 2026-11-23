@@ -205,6 +205,40 @@ public sealed class BytesToImageConverter : IValueConverter
         => throw new NotSupportedException();
 }
 
+/// <summary>
+/// 完整路径 → 只保留文件名。
+///
+/// 用在「候选字幕」列表的 ItemTemplate 里：整条路径会把列表撑宽并触发省略号，
+/// 用户真正想看的只是文件名（完整路径放在 ToolTip 里）。
+///
+/// 注意：这个转换器一度**只被引用、没有被定义**——SubtitleTrackDialog.xaml 里写着
+/// {StaticResource FileName}，而 App.xaml 没有登记同名资源。{StaticResource}
+/// 在 DataTemplate 里是**实例化模板时**才解析的，所以 InitializeComponent 不报错，
+/// 直到对话框真正弹出、渲染第一行候选字幕时才抛 XamlParseFailed（COMException），
+/// 表现为「点一下设置字幕轨，整个程序立刻崩溃」。SelfTest C 组现在有断言兜住这类漏登记。
+/// </summary>
+public sealed class FileNameConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language)
+    {
+        string path = value as string ?? "";
+        if (path.Length == 0) return "";
+        try
+        {
+            string name = Path.GetFileName(path);
+            return name.Length > 0 ? name : path;
+        }
+        catch
+        {
+            // 非法路径字符等异常输入不该让列表渲染失败。
+            return path;
+        }
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language)
+        => throw new NotSupportedException();
+}
+
 /// <summary>布尔值 → 图标字形（用于工具就绪/缺失、任务成功/失败等）。</summary>
 public sealed class BoolToGlyphConverter : IValueConverter
 {

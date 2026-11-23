@@ -93,6 +93,11 @@ public sealed partial class MainWindow : Window, IUiServices
         int compressArg = Array.IndexOf(argv, "--compress-e2e");
         if (compressArg >= 0 && compressArg + 1 < argv.Length) _ = RunCompressE2EAsync(argv[compressArg + 1]);
 
+        // 字幕轨对话框渲染钩子（--subs-dialog-e2e <目录>）：真实弹出 SubtitleTrackDialog 再关掉，
+        // 用来复现「点设置字幕轨立刻崩溃」这类只在模板渲染期才暴露的 XAML 资源错误。
+        int subsDlgArg = Array.IndexOf(argv, "--subs-dialog-e2e");
+        if (subsDlgArg >= 0 && subsDlgArg + 1 < argv.Length) _ = RunSubsDialogE2EAsync(argv[subsDlgArg + 1]);
+
         // 验收/复现钩子（--dir <文件夹>）：走与拖放完全相同的入口把文件加进来。
         int dirArg = Array.IndexOf(argv, "--dir");
         if (dirArg >= 0 && dirArg + 1 < argv.Length)
@@ -583,6 +588,100 @@ public sealed partial class MainWindow : Window, IUiServices
         foreach (object item in Nav.MenuItems.Concat(Nav.FooterMenuItems))
             if (item is NavigationViewItem entry && (entry.Tag as string) == tag) return entry;
         return null;
+    }
+
+    /// <summary>
+    /// 字幕轨对话框渲染自检（--subs-dialog-e2e &lt;目录&gt;）。
+    ///
+    /// 存在的理由：<see cref="Views.SubtitleTrackDialog"/> 的候选列表模板里有
+    /// {StaticResource ...} 引用。这类引用在 DataTemplate 里是「实例化模板时」才解析的，
+    /// XAML 编译器不报错、InitializeComponent 也不报错，只有对话框真正弹出并把第一行
+    /// 候选字幕渲染出来时才会抛 XamlParseFailed（对上层表现为 COMException）——
+    /// 用户看到的就是「点一下设置字幕轨，程序立刻崩溃」。
+    ///
+    /// 所以这段代码不检查任何字符串，而是真的把对话框建出来、挂到 XamlRoot 上、
+    /// 等它完成一次布局，再关掉。任何资源缺失都会在这里现形。
+    /// </summary>
+    private async Task RunSubsDialogE2EAsync(string dir)
+    {
+        var report = new System.Text.StringBuilder();
+        try
+        {
+            await Task.Delay(1500);
+            List<string> files = Directory.GetFiles(dir).OrderBy(f => f, StringComparer.Ordinal).ToList();
+            List<string> videos = files.Where(f => Constants.VideoExts.Contains(Path.GetExtension(f))).ToList();
+            List<string> subs = files.Where(f => Constants.SubExts.Contains(Path.GetExtension(f))).ToList();
+            report.AppendLine("videos=" + videos.Count + " subs=" + subs.Count);
+            if (videos.Count == 0) { report.AppendLine("NO-VIDEO"); return; }
+
+            ViewModel.NavigateCommand.Execute("subtitle");
+            Nav.SelectedItem = FindNavItem("subtitle");
+            await ViewModel.Subtitle.AddPathsAsync(files);
+            await Task.Delay(2500);
+
+            report.AppendLine("rows=" + ViewModel.Subtitle.Rows.Count);
+            if (ViewModel.Subtitle.Rows.Count == 0) { report.AppendLine("NO-ROWS"); return; }
+
+            // 选中第一行，然后走与用户完全相同的命令入口
+            Pages.SubtitlePage? page = ContentFrame.Content as Pages.SubtitlePage;
+            report.AppendLine("page=" + (page is null ? "<null>" : page.GetType().Name));
+            ViewModel.Subtitle.SetSelection(new[] { ViewModel.Subtitle.Rows[0] });
+            report.AppendLine("canExecute=" + ViewModel.Subtitle.EditSubtitlesCommand.CanExecute(null));
+
+            // 直接构造对话框：这等价于命令内部调用 _ui.EditSubtitlesAsync，
+            // 但把「是否渲染成功」与「用户点确定」解耦，便于自动化判定。
+            var dialog = new Views.SubtitleTrackDialog(
+                ViewModel.Subtitle.Rows[0].FullPath, subs, subs,
+                ViewModel.Subtitle.Rows[0].Model.Subs,
+                () => System.Threading.Tasks.Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>()))
+            {
+                XamlRoot = Root.XamlRoot,
+            };
+            report.AppendLine("dialogConstructed=true");
+
+            // 关键一步：真的显示。模板在此刻实例化，缺失的资源会在这里抛异常。
+            var shown = new System.Threading.Tasks.TaskCompletionSource<bool>();
+            try
+            {
+                _ = DispatcherQueue.GetForCurrentThread().TryEnqueue(() =>
+                {
+                    _ = dialog.ShowAsync().AsTask().ContinueWith(t =>
+                    {
+                        if (t.IsFaulted) report.AppendLine("SHOW-FAILED: " + t.Exception?.GetBaseException());
+                        shown.TrySetResult(true);
+                    });
+                });
+                await System.Threading.Tasks.Task.WhenAny(shown.Task, System.Threading.Tasks.Task.Delay(4000));
+                await System.Threading.Tasks.Task.Delay(1200);
+                report.AppendLine("dialogShown=true");
+                report.AppendLine("candidates=" + dialog.CandidateCountForTest);
+                report.AppendLine("tracks=" + dialog.SelectedCountForTest);
+                // 关键：强制布局并数真实容器。资源缺失会在这里抛异常，
+                // 而不是只在数据源计数上"看起来正常"。
+                int realized = dialog.RealizeForTest();
+                report.AppendLine("realizedContainers=" + realized);
+                if (realized < 2) report.AppendLine("RENDER-INCOMPLETE");
+            }
+            catch (Exception ex)
+            {
+                report.AppendLine("RENDER-ERROR: " + ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                try { dialog.Hide(); } catch { /* 已关闭时忽略 */ }
+            }
+
+            report.AppendLine("OK");
+        }
+        catch (Exception ex)
+        {
+            report.AppendLine("SUBS-DIALOG-E2E-ERROR: " + ex);
+        }
+        finally
+        {
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "subfusion_subs_dialog_e2e.txt"), report.ToString());
+            Environment.Exit(0);
+        }
     }
 
     private async Task LoadFolderForTestAsync(string folder)

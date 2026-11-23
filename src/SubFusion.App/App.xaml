@@ -26,6 +26,8 @@
             <converters:ResultOkToSeverityConverter x:Key="ResultOkToSeverity" />
             <!-- 把 copy / libx264 这类技术值翻译成大白话，只影响显示，不改变实际设置值 -->
             <converters:TechLabelConverter x:Key="TechLabel" />
+            <!-- 完整路径 → 文件名（候选字幕列表）。缺了它对话框一渲染就 XamlParseFailed 崩溃。 -->
+            <converters:FileNameConverter x:Key="FileName" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

@@ -319,6 +319,7 @@ GUI 层是一次完整重构，界面已全部重建：**没有沿用旧 MainWin
 | `--ui-report --resize WxH` | 先改窗口尺寸再量测，用于窄窗口布局验证 |
 | `--merge-e2e <目录>` | 真实跑一遍视频合并并把结论（策略/章节/输出/任务中心状态/诊断行数）写进 `subfusion_merge_e2e.txt` |
 | `--subtitle-e2e <目录>` | 真实跑一遍字幕合并，写 `subfusion_subtitle_e2e.txt` |
+| `--subs-dialog-e2e <目录>` | 真实弹出「字幕轨设置」对话框、强制一次布局并数真实容器（`realizedContainers`），写 `subfusion_subs_dialog_e2e.txt`。专抓只在模板渲染期才暴露的 XAML 资源错误 |
 | `--dir <目录>` | 走与拖放相同的入口导入文件 |
 | `--page <tag>` | 启动时直接进入指定页面 |
 
@@ -358,13 +359,13 @@ $env:TMP = $tmp; $env:TEMP = $tmp
 
 ## 6. 测试
 
-`SelfTest` 是唯一测试入口。完整模式 **640 项断言**，全部通过：
+`SelfTest` 是唯一测试入口。完整模式 **644 项断言**全部通过（`--skip-e2e` 跳过 B 组真实编码，**630 项**）。
 
 | 分组 | 内容 |
 | --- | --- |
 | A | 与 Python 版逐项等价比对（`Reference/reference.json` 冻结基准） |
 | B | 字幕端到端：软字幕 / GBK 转码 / 硬字幕 / 取消 |
-| C | 界面结构约束（只断言文件文本，不引用 UI 类型）：NavigationView 五入口、Frame 承载页面、无固定像素高度、三套主题字典、ViewModel 不引用 WinUI、页面 code-behind 不含媒体处理、GUI 只经 Core 接口起任务 |
+| C | 界面结构约束（只断言文件文本，不引用 UI 类型）：NavigationView 五入口、Frame 承载页面、无固定像素高度、三套主题字典、ViewModel 不引用 WinUI、页面 code-behind 不含媒体处理、GUI 只经 Core 接口起任务；**XAML 资源引用完整性**（每个 `{StaticResource}`/`{ThemeResource}` 必须可解析、模板用到的转换器必须已在 App.xaml 登记） |
 | D | 重负载健壮性：20 次超时进程句柄增长、批量中途取消收尾 |
 | E | 「合并后替换源文件」的三条安全保证 |
 | F | 并发硬字幕工作副本隔离 |
@@ -519,6 +520,16 @@ G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine）�
   ③ 引擎先渲染到临时文件、校验通过才 `FileMover.MoveAsync` 到最终路径；直接写最终路径会在失败时删掉用户原有文件。
 - **改主题**：只改 `Styles/Theme.xaml` 的语义色或 `Controls.xaml` 的样式，
   不要在页面里写颜色字面量（C 组断言会检查 ViewModel 边界，人工审查检查页面）。
+- **加/改 XAML 资源引用**（最容易炸且最难查的一类）：
+  `{StaticResource K}` 写在 `DataTemplate` / `ControlTemplate` 里时，是**实例化模板那一刻**
+  才解析的。K 不存在时 XAML 编译器不报错、`InitializeComponent()` 也不报错、页面照常打开，
+  要等控件真正渲染才抛 `XamlParseFailed`，对上层表现为 `COMException 0x80004005`
+  且栈顶是 `FrameworkElement.MeasureOverride`。用户看到的就是「点一下某个对话框，程序立刻崩溃」。
+  - 真实事故：`SubtitleTrackDialog.xaml` 用了 `{StaticResource FileName}`，
+    而 `App.xaml` 从未登记这个转换器 —— 在字幕列表里点任意一行想改字幕轨，直接崩。
+  - 两道防线：C 组新增「资源引用完整性」断言（扫全部 XAML，比对 `x:Key` 定义 + 框架白名单，
+    并反向检查模板用到的每个转换器都已登记）；`--subs-dialog-e2e` 钩子则真的把对话框
+    弹出来、强制一次布局、数**真实容器**（不是数据源计数——`Items.Count` 在模板炸掉时照样是对的）。
 - **改配置**：`AppSettings` 加属性 + `Read`/`Save` 各一行；设置页相应加控件。
 - **并发/子进程**：保持「有界并发 + 取消即 Kill 整棵进程树 + 等管道收尾」三条。
 - **取消语义**：引擎在任何"把子进程结果当作失败"的判断前都必须先

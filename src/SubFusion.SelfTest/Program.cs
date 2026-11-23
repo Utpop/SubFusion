@@ -71,6 +71,7 @@ internal static class Program
 
         Console.WriteLine("=== C. 界面布局约束 ===");
         CheckLayoutConstraints();
+        CheckResourceReferences();
 
         Console.WriteLine("=== D. 重负载健壮性 ===");
         await CheckRobustnessAsync();
@@ -564,6 +565,102 @@ internal static class Program
               File.ReadAllText(Path.Combine(root, "ViewModels", "ShellViewModel.cs"))
                   .Contains("public VideoTrimViewModel Trim", StringComparison.Ordinal));
 
+    }
+
+    /// <summary>
+    /// XAML 资源引用完整性：所有 {StaticResource K} / {ThemeResource K} 要么是应用自己定义的键，
+    /// 要么在下面的框架白名单里。
+    ///
+    /// 为什么必须单独查：{StaticResource} 写在 DataTemplate / ControlTemplate 里时是
+    /// **实例化模板的那一刻**才解析的。键不存在时 InitializeComponent 完全不报错，
+    /// 要等控件真正渲染才抛 XamlParseFailed（对调用方表现为 COMException），
+    /// 也就是「点开某个对话框，程序立刻崩溃」。XAML 编译器对此没有任何检查。
+    ///
+    /// 真实事故：SubtitleTrackDialog.xaml 用了 {StaticResource FileName}，
+    /// 而 App.xaml 从未注册这个转换器 —— 点列表里任一行想改字幕轨就直接崩。
+    /// </summary>
+    private static void CheckResourceReferences()
+    {
+        string? root = FindAppRoot();
+        if (root is null)
+        {
+            Console.WriteLine("(未找到 GUI 工程目录，跳过)");
+            return;
+        }
+
+        // 框架（XamlControlsResources / 系统主题字典）提供的键：应用无需自己定义。
+        var frameworkKeys = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "AccentButtonStyle",
+            "AccentFillColorDefaultBrush",
+            "CardBackgroundFillColorDefaultBrush",
+            "CardStrokeColorDefaultBrush",
+            "LayerFillColorDefaultBrush",
+            "ControlStrongFillColorDefaultBrush",
+            "SubtleFillColorSecondaryBrush",
+            "TextFillColorSecondaryBrush",
+            "TextFillColorTertiaryBrush",
+            "TextOnAccentFillColorPrimaryBrush",
+        };
+
+        string[] files = Directory.GetFiles(root, "*.xaml", SearchOption.AllDirectories)
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) &&
+                        !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (files.Length == 0)
+        {
+            Console.WriteLine("(未找到 XAML 文件，跳过)");
+            return;
+        }
+
+        // 应用定义的全部键（App.xaml + Theme.xaml + Controls.xaml + 页面/控件局部资源）
+        var defined = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string file in files)
+            foreach (System.Text.RegularExpressions.Match m in
+                     System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(file), "x:Key=\"([^\"]+)\"") )
+                defined.Add(m.Groups[1].Value);
+        Check("资源：应用自定义资源键非空", defined.Count > 20, defined.Count + " 个键");
+
+        // 所有引用位置
+        var missing = new SortedSet<string>(StringComparer.Ordinal);
+        int refs = 0;
+        foreach (string file in files)
+            foreach (System.Text.RegularExpressions.Match m in
+                     System.Text.RegularExpressions.Regex.Matches(
+                         File.ReadAllText(file), "\\{(?:StaticResource|ThemeResource) ([A-Za-z0-9_.]+)\\}"))
+            {
+                refs++;
+                string key = m.Groups[1].Value;
+                if (!defined.Contains(key) && !frameworkKeys.Contains(key)) missing.Add(key);
+            }
+        Check("资源：每个 {StaticResource}/{ThemeResource} 引用都能解析",
+              missing.Count == 0,
+              missing.Count == 0
+                  ? $"{refs} 处引用全部可解析"
+                  : "未定义的键：" + string.Join("、", missing));
+
+        // 转换器登记必须对得上实现类：改类名忘了改 App.xaml 同样会在渲染时炸。
+        string appXaml = File.ReadAllText(Path.Combine(root, "App.xaml"));
+        string convertersCs = FindAppFile(Path.Combine("Services", "Converters.cs")) ?? "";
+        var registered = System.Text.RegularExpressions.Regex
+            .Matches(appXaml, "<converters:(\\w+) x:Key=\"([^\"]+)\"")
+            .Select(m => (Class: m.Groups[1].Value, Key: m.Groups[2].Value)).ToList();
+        Check("资源：App.xaml 登记的转换器都有对应实现类",
+              registered.Count >= 10 &&
+              registered.All(r => convertersCs.Contains("class " + r.Class, StringComparison.Ordinal)),
+              registered.Count + " 个转换器：" + string.Join("、", registered.Select(r => r.Key)));
+
+        // 反向：转换器类可以不存在于 App.xaml 之外的字典里，但引用了就必须登记。
+        var converterRefs = System.Text.RegularExpressions.Regex
+            .Matches(string.Join("\n", files.Select(File.ReadAllText)), "Converter=\\{StaticResource ([A-Za-z0-9_]+)\\}")
+            .Select(m => m.Groups[1].Value).Distinct(StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal);
+        var registeredKeys = registered.Select(r => r.Key).ToHashSet(StringComparer.Ordinal);
+        var unregistered = converterRefs.Where(k => !registeredKeys.Contains(k)).ToHashSet(StringComparer.Ordinal);
+        Check("资源：模板里用到的转换器都已在 App.xaml 登记",
+              unregistered.Count == 0,
+              unregistered.Count == 0
+                  ? $"{converterRefs.Count} 个转换器被使用"
+                  : "未登记：" + string.Join("、", unregistered));
     }
 
     /// <summary>
