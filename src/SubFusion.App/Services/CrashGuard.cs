@@ -191,8 +191,19 @@ internal static class CrashGuard
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
 
+    /// <summary>
+    /// 自动化验证开关（SUBFUSION_CRASH_SILENT=1）：崩溃时不弹框，只写日志后退出。
+    ///
+    /// 单文件发布崩溃时弹出的是 Win32 MessageBox，会卡住整台机器等人工点击，
+    /// 自动化脚本既拿不到退出码也无法继续。日志已经写好了，弹框只对人工有意义。
+    /// 正常双击运行时该变量不存在，行为不变。
+    /// </summary>
+    private static bool SilentCrash =>
+        Environment.GetEnvironmentVariable("SUBFUSION_CRASH_SILENT") == "1";
+
     private static void ShowFatalBox(Exception ex, string origin)
     {
+        if (SilentCrash) return;
         _ = MessageBoxW(IntPtr.Zero,
             $"{Constants.AppName} 遇到未处理的错误，已记录到：\n{LogPath}\n\n" +
             $"类型：{ex.GetType().Name}\n{Truncate(ex.Message, 400)}",

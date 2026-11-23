@@ -406,6 +406,46 @@ G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine）�
 `NETSDK1244` 已在该 pubxml 内定向抑制并注明原因：WinAppSDK 的单文件 targets 依赖
 「全部内容解压到磁盘 + SxS 重定向」，去掉 `IncludeAllContentForSelfExtract` 会让产物无法启动。
 
+#### 单文件版「双击即崩」——已修复，改之前必读
+
+**症状**：`dist/SingleExe/SubFusion.exe` 启动后进程立刻结束，窗口完全不出现。
+崩溃栈固定在 `MainWindow.InitializeComponent()` → `Application.LoadComponent` 抛
+`XamlParseException`。同一份代码的目录版完全正常。
+
+**根因**：`csproj` 里 `IncludeXamlArtifactsInPublish` 曾带
+`Condition="'$(PublishSingleFile)' != 'true'"`，即单文件发布不补 `.xbf`。
+但单文件 bundle 是靠 `IncludeAllContentForSelfExtract` 把内容解压到
+`%TEMP%\.net\SubFusion\<内容哈希>\` 再运行的，而 WindowsAppSDK 只把 **`.xaml` 源文件**
+带进那份解压清单——于是解压目录里有 12 个 `.xaml`、**0 个 `.xbf`**，
+而同一份产物里的 `SubFusion.pri` 登记的却是 `MainWindow.xbf`。
+`LoadComponent` 按 PRI 找不到目标，窗口构造期就抛异常。
+
+**验证方法（不用启动程序）**：直接查 bundle 清单，两个数字必须对上——
+
+```powershell
+dotnet msbuild src/SubFusion.App/SubFusion.App.csproj -t:ComputeFilesToPublish `
+  -p:Configuration=Release -p:Platform=x64 -p:PublishProfile=SingleFile `
+  -p:PublishSingleFile=true -p:SelfContained=true -p:RuntimeIdentifier=win-x64 `
+  -getItem:_FilesToBundle
+```
+
+修复前 `xbf: 0`、`xaml: 12`；修复后 **`xbf: 12`**、`xaml: 12`、`pri: 2`。
+目录发布则是 `xbf: 12`（`-getItem:ResolvedFileToPublish`）。
+
+**两个必须遵守的约束**：
+
+1. **不能加 `Condition`。** 目录发布和单文件发布走的是同一个 Item 清单来源，
+   只在其中一边补，另一边就会缺。
+2. **必须跑在 `_ComputeFilesToBundle` 之前。** `_FilesToBundle` 直接以
+   `ResolvedFileToPublish` 为输入；而 `ComputeFilesToPublish` 的 `AfterTargets`
+   跑在打包之后，在那里补项目对 bundle 无效（目录发布不受影响，所以这个坑
+   只在单文件形态暴露）。正确写法是
+   `BeforeTargets="_ComputeFilesToBundle;ComputeFilesToPublish"`。
+
+**排查提示**：不要用 `Content` 项去补 `.xbf`——`Content → publish` 的转换
+（`_ComputeCopyToPublishDirectoryItems`）在目标执行阶段再添加项已经来不及，
+静态查询显示 `Content` 里根本没有这些文件。直接写 `ResolvedFileToPublish`。
+
 ### 7.2.1 图标
 
 图标有三个出口，**都指向同一个 `app.ico`**，改图标时缺一不可：

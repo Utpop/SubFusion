@@ -81,12 +81,26 @@
 
   <!--
     WinUI 3 的 XAML 编译产物（.xbf）与资源索引（.pri）默认只进入 build 输出，
-    dotnet publish 不会自动带上，导致发布目录里的 exe 因资源缺失而启动失败。
-    目录发布（默认）时显式补上；单文件发布时这些资源由 EnableMsixTooling
-    生成的嵌入版 resources.pri 承载，再复制一份反而会让发布目录残留外部文件。
+    dotnet publish 不会自动带上，不补就会出现「发布目录里的 exe 启动即崩」。
+
+    **目录发布与单文件发布都必须补，不能加 Condition。**
+
+    v2.3 单文件版「双击即崩」的根因就是这个 Target 上写了
+    Condition="'$(PublishSingleFile)' != 'true'"。实测（-getItem:_FilesToBundle）：
+      · 带 Condition 时，单文件 bundle 里是 { xaml: 12, xbf: 0 }；
+      · 目录发布里是 { xbf: 12 }。
+    单文件 bundle 靠 Content 解压到 %TEMP%\.net\SubFusion\<内容哈希>\ 运行，
+    而 WindowsAppSDK 只把 **.xaml 源文件**带进去；同一份产物里的 SubFusion.pri
+    登记的却是 MainWindow.xbf。Application.LoadComponent 按 PRI 找 .xbf 找不到，
+    于是 MainWindow.InitializeComponent() 抛 XamlParseException，进程启动即结束。
+
+    关键约束：这个 Target 必须跑在 **_ComputeFilesToBundle 之前**。
+    _ComputeFilesToBundle 直接以 ResolvedFileToPublish 为输入，而
+    ComputeFilesToPublish 的 AfterTargets 跑在打包之后，在那里补项目对 bundle 无效
+    （目录发布不受影响，所以这个坑只在单文件形态暴露）。
   -->
-  <Target Name="IncludeXamlArtifactsInPublish" AfterTargets="ComputeFilesToPublish"
-          Condition="'$(PublishSingleFile)' != 'true'">
+  <Target Name="IncludeXamlArtifactsInPublish"
+          BeforeTargets="_ComputeFilesToBundle;ComputeFilesToPublish">
     <ItemGroup>
       <!-- 递归收集全部 XAML 编译产物（App / Views / Pages / Styles），
            避免新增页面或样式字典后发布目录漏拷 .xbf 导致启动失败。 -->
