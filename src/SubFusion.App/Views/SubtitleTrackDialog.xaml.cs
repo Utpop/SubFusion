@@ -21,6 +21,16 @@ public sealed partial class SubtitleTrackDialog : ContentDialog
     private readonly List<SubTrack> _tracks = new();
     private bool _suppress;
 
+    /// <summary>
+    /// 候选列表 ↔ 已选列表 的同步守卫。
+    ///
+    /// 候选列表里的「选中」本身就是「这份字幕要合并」——提示语写的就是勾选。
+    /// 之前只有按「添加 →」或双击才写入 _tracks，用户按提示点选后直接点确定，
+    /// 交回去的是空列表：行仍显示（无字幕），状态栏却照样报「已更新」，看不出问题。
+    /// 现在选中即写入、取消选中即移除；这个标志防止回写时递归触发。
+    /// </summary>
+    private bool _candidateSync;
+
     /// <summary>确定后返回编辑结果；取消时为 null。</summary>
     public List<SubTrack>? Result { get; private set; }
 
@@ -47,6 +57,7 @@ public sealed partial class SubtitleTrackDialog : ContentDialog
 
         foreach (SubTrack track in current) _tracks.Add(track.Clone());
         RefreshSelected();
+        SyncCandidateSelection();
     }
 
     private void AddPath(string path)
@@ -139,11 +150,67 @@ public sealed partial class SubtitleTrackDialog : ContentDialog
 
     private void CandidateList_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) => OnAdd(sender, e);
 
+    /// <summary>
+    /// 候选列表的选中状态直接映射到已选轨道：选中=加入，取消=移除。
+    /// 这样「点选字幕 → 确定」就真的会合并，不需要再按一次「添加 →」。
+    /// </summary>
+    private void CandidateList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_candidateSync) return;
+        _candidateSync = true;
+        try
+        {
+            foreach (object item in e.RemovedItems)
+                if (item is string removed)
+                    _tracks.RemoveAll(t => string.Equals(t.Path, removed, StringComparison.Ordinal));
+            foreach (object item in e.AddedItems)
+                if (item is string added)
+                    AddPath(added);
+            // 勾选候选时不要打乱右侧当前选中的那一条，否则每点一次左侧，
+            // 右下角的语言/轨道名编辑区就跳回第一条。
+            RefreshSelected(select: SelectedList.SelectedIndex >= 0 ? SelectedList.SelectedIndex : null);
+        }
+        finally
+        {
+            _candidateSync = false;
+        }
+    }
+
+    /// <summary>把 _tracks 的现状回填到候选列表的选中集合（不触发同步）。</summary>
+    private void SyncCandidateSelection()
+    {
+        _candidateSync = true;
+        try
+        {
+            CandidateList.SelectedItems.Clear();
+            foreach (SubTrack track in _tracks)
+                if (_candidatePaths.Contains(track.Path, StringComparer.Ordinal))
+                    CandidateList.SelectedItems.Add(track.Path);
+        }
+        finally
+        {
+            _candidateSync = false;
+        }
+    }
+
     private void OnRemove(object sender, RoutedEventArgs e)
     {
         int idx = SelectedList.SelectedIndex;
         if (idx < 0 || idx >= _tracks.Count) return;
+        string path = _tracks[idx].Path;
         _tracks.RemoveAt(idx);
+        // 不同步取消候选列表的选中，下一次选择变更会按理把它又加回来。
+        _candidateSync = true;
+        try
+        {
+            foreach (object item in CandidateList.SelectedItems.Cast<object>().ToList())
+                if (item is string s && string.Equals(s, path, StringComparison.Ordinal))
+                    CandidateList.SelectedItems.Remove(item);
+        }
+        finally
+        {
+            _candidateSync = false;
+        }
         RefreshSelected();
     }
 
@@ -157,6 +224,7 @@ public sealed partial class SubtitleTrackDialog : ContentDialog
         IReadOnlyList<string> paths = await _browse();
         foreach (string path in paths) AddPath(path);
         RefreshSelected();
+        SyncCandidateSelection();
     }
 
     private void OnMoveUp(object sender, RoutedEventArgs e) => Move(-1);
@@ -182,7 +250,13 @@ public sealed partial class SubtitleTrackDialog : ContentDialog
     private void OnCheckChanged(object sender, RoutedEventArgs e) => ApplyProps();
 
     private void OnPrimaryButtonClick(ContentDialog sender, ContentDialogButtonClickEventArgs args)
-        => Result = _tracks;
+    {
+        // 兜底：提交瞬间再把候选列表里仍处于选中状态的字幕补进结果。
+        // 正常路径由 CandidateList_SelectionChanged 已经写好，这里只防事件时序差异，
+        // AddPath 对已存在项是幂等的，重复不会产生第二条轨道。
+        foreach (string path in CandidateList.SelectedItems.OfType<string>().ToList()) AddPath(path);
+        Result = _tracks;
+    }
 
     /// <summary>自动化自检用：数据源条目数（不代表模板渲染成功）。</summary>
     internal int CandidateCountForTest => CandidateList.Items.Count;

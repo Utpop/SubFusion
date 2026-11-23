@@ -442,6 +442,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IBatchEvents
         {
             int matched = _jobs.Sum(j => j.Subs.Count);
             CountText = $"视频 {_videos.Count} 个 / 字幕 {_subs.Count} 个 / 已匹配 {matched} 份";
+            // 底部摘要必须跟着重算：它是「当前每行实际挂了几条字幕」的投影。
+            // 只读 _jobs 而不刷新，手动改完轨道后摘要会停在匹配那一刻的旧值，
+            // 出现「明明选了字幕，底部还写 1 个无字幕」。
+            SummaryText = BuildSummary(matched);
         }
         NotifyRowsChanged();
     }
@@ -611,7 +615,11 @@ public sealed partial class SubtitleViewModel : ObservableObject, IBatchEvents
         job.Subs = result;
         job.UserEdited = true;
         row.Refresh();
-        StatusText = $"已更新 {job.Name} 的字幕轨";
+        // 手动改道轨后行内容变了，底部摘要与计数也要一起更新，否则二者互相矛盾。
+        UpdateCountText();
+        StatusText = result.Count > 0
+            ? $"已更新 {job.Name} 的字幕轨：{result.Count} 条"
+            : $"{job.Name} 的字幕轨已清空";
     }
 
     #endregion
