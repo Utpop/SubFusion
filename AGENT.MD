@@ -359,7 +359,7 @@ $env:TMP = $tmp; $env:TEMP = $tmp
 
 ## 6. 测试
 
-`SelfTest` 是唯一测试入口。完整模式 **644 项断言**全部通过（`--skip-e2e` 跳过 B 组真实编码，**630 项**）。
+`SelfTest` 是唯一测试入口。完整模式 **645 项断言**全部通过（`--skip-e2e` 跳过 B 组真实编码，**631 项**）。
 
 | 分组 | 内容 |
 | --- | --- |
@@ -420,7 +420,27 @@ G/H 的素材全部由 ffmpeg 现场生成（`lavfi` testsrc/smptebars/sine）�
 而同一份产物里的 `SubFusion.pri` 登记的却是 `MainWindow.xbf`。
 `LoadComponent` 按 PRI 找不到目标，窗口构造期就抛异常。
 
-**验证方法（不用启动程序）**：直接查 bundle 清单，两个数字必须对上——
+**真正的根因（第二次修正，以静态清单为准）**：不是「缺 .xbf」，而是**多带了源 .xaml**。
+
+单文件发布开了 `IncludeAllContentForSelfExtract=true`，WinUI 的 Page/XAML 项同时作为
+Content 交付，于是解包目录里 **`.xaml` 与 `.xbf` 同时存在**；目录发布只有 `.xbf`。
+两者都在时 `LoadComponent` 解析失败（源 `.xaml` 含 `x:Bind`/`x:DataType` 等需要编译期
+代码生成的标记，运行期无法独立解析），抛 `XamlParseException`，栈顶固定在
+`MainWindow.InitializeComponent()`。
+
+实测清单对比（`-getItem:_FilesToBundle` / `ResolvedFileToPublish`）：
+
+| | 源 .xaml | .xbf | SubFusion.pri |
+| --- | --- | --- | --- |
+| 目录发布（正常） | 0 | 12 | 1 |
+| 单文件（坏） | 12 | 12 | 2（重复） |
+| 单文件（修后） | 0 | 12 | 1 |
+
+> 教训：只看「.xbf 是否有 12 个」会得出错误结论——补上 .xbf 之后**依然崩溃**，
+> 因为多出来的 .xaml 才是问题。必须和**已知可用的目录发布**逐条比对清单，
+> 而不是只数其中一种文件。
+
+**验证方法（不用启动程序）**：直接查两份清单并逐条比对——
 
 ```powershell
 dotnet msbuild src/SubFusion.App/SubFusion.App.csproj -t:ComputeFilesToPublish `

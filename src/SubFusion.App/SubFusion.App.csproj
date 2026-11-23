@@ -102,14 +102,34 @@
   <Target Name="IncludeXamlArtifactsInPublish"
           BeforeTargets="_ComputeFilesToBundle;ComputeFilesToPublish">
     <ItemGroup>
-      <!-- 递归收集全部 XAML 编译产物（App / Views / Pages / Styles），
+      <!-- 收集全部 XAML 编译产物（App / Views / Pages / Styles），
            避免新增页面或样式字典后发布目录漏拷 .xbf 导致启动失败。 -->
       <_AppXamlArtifact Include="$(TargetDir)**\*.xbf" />
       <ResolvedFileToPublish Include="@(_AppXamlArtifact)"
                              RelativePath="%(_AppXamlArtifact.RecursiveDir)%(_AppXamlArtifact.Filename)%(_AppXamlArtifact.Extension)"
                              CopyToPublishDirectory="PreserveNewest" />
-      <ResolvedFileToPublish Include="$(TargetDir)SubFusion.pri"
-                             RelativePath="SubFusion.pri" CopyToPublishDirectory="PreserveNewest" />
+
+      <!--
+        【关键】把 .xaml 源文件从发布清单里去掉，只留 .xbf。
+
+        单文件发布开了 IncludeAllContentForSelfExtract=true，会把 **Content 项**一并
+        解压到 %TEMP%\.net\SubFusion\<内容哈希>\。WinUI 的 Page/XAML 项同时也作为
+        Content 交付，于是解包目录里 .xaml 与 .xbf **同时存在**；而目录发布只有 .xbf。
+        LoadComponent 在两者都在时解析失败（.xaml 含 x:Bind/x:DataType 等需要编译期
+        代码生成的标记，运行期无法独立解析），抛 XamlParseException，
+        栈顶固定在 MainWindow.InitializeComponent() —— 这就是「单文件版双击即崩、
+        目录版正常」的真正原因，和缺 .xbf 无关（补了 .xbf 之后仍然崩）。
+
+        实测对比（-getItem:_FilesToBundle）：
+          修复前：每页 xaml + xbf 各一份（26 个 xaml 相关条目），崩溃；
+          目录发布：只有 xbf，正常。
+        所以单文件形态必须让 XAML 布局与目录发布完全一致：只留 .xbf。
+      -->
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                             Condition="'%(Extension)' == '.xaml'" />
+
+      <!-- SubFusion.pri 已在 _FilesToBundle 中由 MSIX targets 提供一份，这里不再重复添加，
+           否则 bundle 内会出现两条同名条目（实测重复 2 次）。 -->
     </ItemGroup>
   </Target>
 

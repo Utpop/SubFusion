@@ -661,6 +661,19 @@ internal static class Program
               unregistered.Count == 0
                   ? $"{converterRefs.Count} 个转换器被使用"
                   : "未登记：" + string.Join("、", unregistered));
+
+        // 发布清单不变量：源 .xaml 不得与 .xbf 同时进入发布产物。
+        // 单文件发布开了 IncludeAllContentForSelfExtract，会把 Content 一并解压；
+        // WinUI 的 XAML 项同时作为 Content，导致解包里 .xaml 与 .xbf 并存，
+        // LoadComponent 解析失败 → MainWindow.InitializeComponent() 抛 XamlParseException。
+        // 现象是「单文件版双击即崩、目录版正常」。补 .xbf 并不能解决——多出来的 .xaml 才是病根，
+        // 所以这里直接断言 csproj 里有排除动作，而不是数 .xbf 的个数。
+        string? csprojText = FindAppFile("SubFusion.App.csproj");
+        Check("发布：csproj 把源 .xaml 从发布清单中排除（单文件版靠这条避免启动崩溃）",
+              csprojText is not null &&
+              csprojText.Contains("ResolvedFileToPublish Remove", StringComparison.Ordinal) &&
+              csprojText.Contains("== '.xaml'", StringComparison.Ordinal),
+              "单文件发布解压后若 .xaml 与 .xbf 并存，LoadComponent 会抛 XamlParseException");
     }
 
     /// <summary>
