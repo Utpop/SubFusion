@@ -36,6 +36,14 @@
     <EnableMsixTooling>false</EnableMsixTooling>
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <!--
+      单文件 EXE 可以被用户任意改名（例如 SubFusion-v2.3.exe），但 WinUI 3 默认
+      用 AssemblyName 生成的 SubFusion.pri 是按 exe 名查资源的：改名后运行时找不到
+      PRI，MainWindow.InitializeComponent() 抛 XamlParseException 启动即崩。
+      这是 WindowsAppSDK 的已知问题（microsoft/WindowsAppSDK#6248 / microsoft-ui-xaml#10966）。
+      官方规避办法：把 PRI 固定命名为 resources.pri，运行时按这个名字查找，与 exe 名无关。
+    -->
+    <ProjectPriFileName>resources.pri</ProjectPriFileName>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>12.0</LangVersion>
