@@ -65,6 +65,7 @@ internal static class Program
         CheckProgress(root);
         await CheckEncodingsAsync(root);
         CheckNaturalSort();
+        CheckCrossLanguageMatching();
 
         Console.WriteLine("=== B. 端到端功能验证（本机 ffmpeg） ===");
         await EndToEndAsync(args.Contains("--skip-e2e"));
@@ -290,6 +291,50 @@ internal static class Program
     /// 文件名自然排序：连续数字按数值比较。
     /// 这是"默认按名称排序"的正确性基线——字符串序会把 10 排在 2 前面，与用户预期相反。
     /// </summary>
+    /// <summary>
+    /// 回归：中文压制组字幕（双峰S02E01.srt）对英文源（Twin.Peaks.S02E01.Coma.…mkv）。
+    ///
+    /// 实测真实目录 22 集全部匹配失败，原因是两条：
+    ///   1. 季集号与中文标题挤在一起（双峰S02E01），整个被当成标题词，集数识别不出来；
+    ///   2. 就算识别出集数，中英标题相似度恒为 0，任何权重都到不了阈值。
+    /// 这里同时锁住修复后必须成立的三件事：跨语言能配上、季号不串、同语言错配不被硬配。
+    /// </summary>
+    private static void CheckCrossLanguageMatching()
+    {
+        const string Dir = @"D:\Movies\双峰 第二季 Twin Peaks Season 2 (1990)\";
+        var videos = new List<string>
+        {
+            Dir + "Twin.Peaks.S02E01.May.the.Giant.Be.with.You.1080p.10bit.BluRay.6CH.x265.HEVC-PSA.mkv",
+            Dir + "Twin.Peaks.S02E02.Coma.1080p.10bit.BluRay.6CH.x265.HEVC-PSA.mkv",
+        };
+        var subs = new List<string> { Dir + "双峰S02E01.srt", Dir + "双峰S02E02.srt" };
+
+        MatchResult m = SubtitleMatcher.Match(videos, subs, 0.72);
+        Sequence("跨语言匹配：E01 挂 E01", new[] { "双峰S02E01.srt" },
+                 m.Mapping[videos[0]].Select(p => Path.GetFileName(p) ?? p));
+        Sequence("跨语言匹配：E02 挂 E02", new[] { "双峰S02E02.srt" },
+                 m.Mapping[videos[1]].Select(p => Path.GetFileName(p) ?? p));
+        Equal("跨语言匹配：无未匹配字幕", 0, m.Unmatched.Count);
+
+        // 季号必须参与区分：只有 S03E01 时，S02E01 的字幕不能挂上去。
+        var seasonMismatch = SubtitleMatcher.Match(
+            new List<string> { Dir + "Twin.Peaks.S03E01.1080p.mkv" },
+            new List<string> { Dir + "双峰S02E01.srt" }, 0.72);
+        Equal("季号不同不配对", 0, seasonMismatch.Mapping.Values.Sum(x => x.Count));
+
+        // 同语言、标题不同、集数相同：不能只靠集数硬配（这是把字幕挂错剧的主要风险）。
+        var sameScript = SubtitleMatcher.Match(
+            new List<string> { Dir + "Twin.Peaks.S02E01.1080p.mkv" },
+            new List<string> { Dir + "Breaking.Bad.S02E01.srt" }, 0.72);
+        Equal("同语言不同剧不靠集数硬配", 0, sameScript.Mapping.Values.Sum(x => x.Count));
+
+        // 精确认定：季集号必须真的被解析出来，否则上面几条会靠别的路径碰巧通过。
+        NameSignature sig = NameNormalizer.Analyze(Dir + "双峰S02E01.srt");
+        Equal("中文紧贴季集号：集号", "01", sig.Episode ?? "");
+        Equal("中文紧贴季集号：季号", "02", sig.Season);
+        Equal("中文紧贴季集号：标题不含集号", "双峰", sig.Title);
+    }
+
     private static void CheckNaturalSort()
     {
         var cmp = NaturalComparer.Instance;

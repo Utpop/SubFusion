@@ -49,6 +49,23 @@ public static class NameNormalizer
     private static readonly Regex EpisodeShortRegex = new(
         @"^(?:s\d{1,2})?e(?:p)?(\d{1,4})$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
+    /// <summary>
+    /// S02E01 / s3e12 / S02E01v2 —— 同时取季号与集号。
+    ///
+    /// 原有的 <see cref="EpisodeShortRegex"/> 把季号丢掉了，于是 S02E01 与 S03E01
+    /// 都归约为「01」，同一个目录里放两季时无法区分。季号是跨语言兜底配对的
+    /// 唯一依据，必须保留。
+    /// </summary>
+    /// <summary>日/韩/汉字与紧贴的 SxxExx 之间的分隔点（双峰S02E01 / S02E01双峰 / 双峰S02E01双峰）。</summary>
+    private static readonly Regex GluedSeasonEpisodeRegex = new(
+        @"(?<=[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af])(?=s[0-9]{1,2}e[0-9]{1,4})" +
+        @"|(?<=s[0-9]{1,2}e[0-9]{1,4})(?=[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    private static readonly Regex SeasonEpisodeRegex = new(
+        @"^s([0-9]{1,2})e([0-9]{1,4})(?:v[0-9]+)?$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
     /// <summary>数字后带这两个单位时它不是「集数」，不能在集数匹配上当作序号用。</summary>
     private static readonly HashSet<string> NonEpisodeUnits =
         new(StringComparer.Ordinal)
@@ -79,6 +96,11 @@ public static class NameNormalizer
         => ReleaseNoiseSet.Contains(lower) || TechShortWords.Contains(lower) ||
            IsResolutionToken(lower) || RipRegex.IsMatch(lower) ||
            Regex.IsMatch(lower, @"^s\d{1,2}e\d{1,4}$|^e\d{1,4}$|^ep\d{1,4}$|^\d{3,4}x\d{3,4}$");
+
+    /// <summary>集数 / 季集标记词（s02e01、ep03、01 这类）：标识第几集，不是版本特征。</summary>
+    private static bool IsEpisodeMarkerWord(string lower)
+        => SeasonEpisodeRegex.IsMatch(lower) || EpisodeShortRegex.IsMatch(lower) ||
+           Regex.IsMatch(lower, @"^[0-9]{1,2}(v[0-9]+)?$");
 
     /// <summary>纯分隔符切出来的 token（"Anime - 01" 的 "-"）既不是标题也不是词，直接丢掉。</summary>
     private static bool IsSeparatorOnly(string token) => token.All(c => SepChars.Contains(c));
@@ -262,6 +284,12 @@ public static class NameNormalizer
         // 导致「Movie.简体.srt」与「Movie.mkv」的标题不一致。ASCII 输出不变。
         name = Constants.NonAsciiLangTokenRegex.Replace(name, " ");
 
+        // 中文标题与季集号常挤在一起（双峰S02E01.srt）。不在这里切开，整个
+        // "双峰S02E01" 会被当成一个标题词，S02E01 永远识别不出来，集数丢失，
+        // 这类字幕就只能全部落到「未匹配」。只在中日韩字符与 SxxExx 之间插分隔符，
+        // 不影响本来就带点的 Show.S02E01。三种写法（中文在前 / 在后 / 被中文包住）都覆盖。
+        name = GluedSeasonEpisodeRegex.Replace(name, " ");
+
         // 括号内的内容按顺序参与切词（[POPGO]、[01]、[HEVC_10bit_AAC]），
         // 但如果一组括号里全是噪声词（[1080P][BluRay]），整组丢掉
         var tokens = new List<string>();
@@ -279,7 +307,13 @@ public static class NameNormalizer
             var rawWords = chunk.Split(SepChars, StringSplitOptions.RemoveEmptyEntries)
                                 .Where(w => !IsSeparatorOnly(w)).ToList();
             int lastWord = rawWords.FindLastIndex(w => !IsTechWord(w.ToLowerInvariant()));
-            var run = rawWords.Skip(lastWord + 1).Select(w => w.ToLowerInvariant()).ToList();
+            // 集数/季集标记被 IsTechWord 当成噪声丢出标题，但它**不是版本特征**：
+            // 留着会让「双峰S02E01.srt」的技术尾巴变成 "s02e01"，与视频的
+            // "1080p bluray" 互相矛盾，把本来正确的同名配对判死。
+            var run = rawWords.Skip(lastWord + 1)
+                              .Select(w => w.ToLowerInvariant())
+                              .Where(w => !IsEpisodeMarkerWord(w))
+                              .ToList();
             if (run.Count > 0) trailer = run;
 
             tokens.AddRange(inner);
@@ -287,12 +321,14 @@ public static class NameNormalizer
 
         var title = new List<string>();
         string? episode = null;
+        string season = "";
         for (int i = 0; i < tokens.Count; i++)
         {
             string tok = tokens[i];
-            if (episode is null && TryEpisode(tok, tokens, i, out string? eps, out int consumed))
+            if (episode is null && TryEpisode(tok, tokens, i, out string? eps, out int consumed, out string ss))
             {
                 episode = eps;
+                season = ss;
                 if (consumed == 2) { title.Add(tok + tokens[i + 1]); i++; continue; }
                 continue;
             }
@@ -318,7 +354,8 @@ public static class NameNormalizer
             string.Join(" ", title),
             typedLang,
             episode,
-            techTail);
+            techTail,
+            season);
     }
 
     /// <summary>.zh-CN / .pt-BR 这类「语言-地区」。</summary>
@@ -337,16 +374,24 @@ public static class NameNormalizer
     /// consumed=2 表示集数由相邻的两个 token 组成（EP + 03）。
     /// </summary>
     private static bool TryEpisode(string token, IReadOnlyList<string> tokens, int index,
-                                   out string? episode, out int consumed)
+                                   out string? episode, out int consumed, out string season)
     {
         episode = null;
         consumed = 1;
+        season = "";
 
         string core = token.Trim('[', ']', '{', '}', '(', ')').ToLowerInvariant();
         string prev = index > 0 ? tokens[index - 1].ToLowerInvariant() : "";
         string next = index + 1 < tokens.Count ? tokens[index + 1].ToLowerInvariant() : "";
 
         // EP03 / E03 / 第03集 这种整体形式
+        var withSeason = SeasonEpisodeRegex.Match(core);
+        if (withSeason.Success)
+        {
+            season = withSeason.Groups[1].Value;
+            episode = withSeason.Groups[2].Value;
+            return true;
+        }
         var shortForm = EpisodeShortRegex.Match(core);
         if (shortForm.Success) { episode = shortForm.Groups[1].Value; return true; }
         var cjkForm = CjkEpisodeRegex.Match(core);
@@ -470,4 +515,5 @@ public sealed record NameSignature(
     string Title,
     string TypedLang,
     string? Episode,
-    string Tail = "");
+    string Tail = "",
+    string Season = "");

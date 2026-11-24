@@ -38,6 +38,19 @@ public static class SubtitleMatcher
     private const double TokenWeight = 0.15;
     private const double BitmapScopeFactor = 0.5;
 
+    /// <summary>
+    /// 同目录、同季集号、但两边标题分属不同语言体系时的配对分。
+    ///
+    /// 中文压制组习惯写「双峰S02E01.srt」，英文源写 Twin.Peaks.S02E01.Coma.…mkv。
+    /// 两者标题词的字符集完全不重叠，标题相似度恒为 0，任何权重组合都到不了阈值，
+    /// 于是整季字幕一份都挂不上（实测 22/22 未匹配）。这类文件名里唯一可靠的线索
+    /// 就是季 + 集，所以用它兜底。
+    ///
+    /// 定为 0.93：低于「同名（0.98 / 1.0）」，保证真正同名的字幕永远优先；
+    /// 高于默认阈值 0.72，让跨语言配对能自动挂上。
+    /// </summary>
+    private const double CrossLanguageScoreValue = 0.93;
+
     private sealed class Candidate
     {
         public required string Sub { get; init; }
@@ -60,6 +73,18 @@ public static class SubtitleMatcher
         foreach (string v in videos)
             videoSigs[v] = (NameNormalizer.Analyze(v), NormalizeDir(Path.GetDirectoryName(v)));
 
+        // 「同目录 + 同季 + 同集」出现不止一个视频时，季集号就不再是唯一线索
+        // （两部剧各有 S02E01）。这种位置不参与跨语言兜底配对，
+        // 宁可留给用户手动指定，也不要自动挂到错的剧上。
+        var slotCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (string v in videos)
+        {
+            (NameSignature vs, string vd) = videoSigs[v];
+            if (string.IsNullOrEmpty(vs.Episode)) continue;
+            string key = vd + "|" + vs.Season + "|" + vs.Episode;
+            slotCounts[key] = slotCounts.TryGetValue(key, out int c) ? c + 1 : 1;
+        }
+
         // 1) 每份字幕 × 每个视频打分（只看目录内的视频：跨目录本来就判定不匹配）
         var unmatched = new List<string>();
         var bySub = new Dictionary<string, List<Candidate>>(StringComparer.Ordinal);
@@ -76,7 +101,10 @@ public static class SubtitleMatcher
                 (NameSignature vSig, string vDir) = videoSigs[video];
                 bool sameDir = string.Equals(subDir, vDir, StringComparison.OrdinalIgnoreCase);
 
-                double score = Score(subSig, vSig, sameDir, bitmap);
+                bool slotUnique = !string.IsNullOrEmpty(vSig.Episode) &&
+                                  slotCounts.TryGetValue(vDir + "|" + vSig.Season + "|" + vSig.Episode,
+                                                         out int slotCount) && slotCount == 1;
+                double score = Score(subSig, vSig, sameDir, bitmap, slotUnique);
                 if (score <= 0.0 || score < threshold) continue;       // 0 表示「明确不匹配」，与阈值无关
 
                 bool exact = sameDir && titleKey.Length > 0 && titleKey == Key(vSig.Title) &&
@@ -198,6 +226,8 @@ public static class SubtitleMatcher
         string subDir = NormalizeDir(Path.GetDirectoryName(subtitle));
         string vidDir = NormalizeDir(Path.GetDirectoryName(video));
         bool bitmap = Constants.BitmapSubExts.Contains(Path.GetExtension(subtitle).ToLowerInvariant());
+        // 单对诊断接口没有全集，无从判断「季集号是否唯一」，按唯一处理。
+        // 批量匹配走 Match()，那里会按真实目录统计后传入。
         return Score(NameNormalizer.Analyze(subtitle), NameNormalizer.Analyze(video),
                      string.Equals(subDir, vidDir, StringComparison.OrdinalIgnoreCase), bitmap);
     }
@@ -210,7 +240,8 @@ public static class SubtitleMatcher
         return tokens.Length > 0 && tokens.All(char.IsAsciiDigit);
     }
 
-    private static double Score(NameSignature sub, NameSignature video, bool sameDir, bool bitmap)
+    private static double Score(NameSignature sub, NameSignature video, bool sameDir, bool bitmap,
+                               bool slotUnique = true)
     {
         bool subKnown = HasIdentity(sub);
         bool vidKnown = HasIdentity(video);
@@ -229,11 +260,50 @@ public static class SubtitleMatcher
         if (subHasEps && vidHasEps && !string.Equals(sub.Episode, video.Episode, StringComparison.Ordinal))
             return 0.0;                                                 // 01 与 02 是不同集
 
+        // 季号同样不能串：S02E01 与 S03E01 的集号都是 01，只看集数会把两季混成一个。
+        // 只有两边都写明了季号才比较，避免「Show.E01.srt」被「Show.S01E01.mkv」判死。
+        if (sub.Season.Length > 0 && video.Season.Length > 0 &&
+            !string.Equals(sub.Season, video.Season, StringComparison.Ordinal))
+            return 0.0;
+
         double titleScore = exactTitle ? 1.0 : NameNormalizer.StringSimilarity(sub.Title, video.Title);
+
+        // 跨语言兜底：同目录 + 季集号一致 + 位置唯一 + 标题分属不同字符体系
+        // （中文「双峰」对英文「Twin Peaks」）。这种组合下标题相似度恒为 0，
+        // 任何权重都到不了阈值，只有季集号能证明它们是同一集。
+        if (!exactTitle && titleScore < 0.5 && sameDir && slotUnique &&
+            subHasEps && vidHasEps && IsCrossScript(sub.Title, video.Title))
+            return CrossLanguageScoreValue;
         double tokenScore = Jaccard(sub.Tokens, video.Tokens);
         double score = TitleWeight * titleScore + TokenWeight * tokenScore;
         if (!sameDir && (bitmap || !exactTitle)) score *= BitmapScopeFactor;
         return score;
+    }
+
+    /// <summary>
+    /// 两个标题是否分属不同字符体系（一边主要是中日韩文字，另一边主要是拉丁字母）。
+    /// 只有这种情况才允许用季集号兜底配对：两个都是拉丁标题时，相似度低就说明
+    /// 确实不是同一个作品，不能靠集数硬配。
+    /// </summary>
+    private static bool IsCrossScript(string a, string b)
+    {
+        bool aCjk = IsMostlyCjk(a), bCjk = IsMostlyCjk(b);
+        return aCjk != bCjk;
+    }
+
+    /// <summary>标题里中日韩字符占比过半。</summary>
+    private static bool IsMostlyCjk(string title)
+    {
+        int cjk = 0, letters = 0;
+        foreach (char c in title)
+        {
+            if (char.IsWhiteSpace(c)) continue;
+            letters++;
+            if ((c >= '一' && c <= '鿿') || (c >= '぀' && c <= 'ヿ') ||
+                (c >= '가' && c <= '힯'))
+                cjk++;
+        }
+        return letters > 0 && cjk * 2 >= letters;
     }
 
     /// <summary>a 的每个 token 是否都出现在 b 里（空的 a 视为「什么都没提」，永远满足）。</summary>
