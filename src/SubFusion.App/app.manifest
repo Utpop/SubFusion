@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="2.3.0.0" name="SubFusion.app" />
+  <assemblyIdentity version="2.3.1.0" name="SubFusion.app" />
 
   <!--
     默认以管理员权限运行（v1.1）：批量合并需要写入用户可能无权访问的输出目录、
