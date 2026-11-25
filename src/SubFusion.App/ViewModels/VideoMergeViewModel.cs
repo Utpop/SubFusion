@@ -693,20 +693,12 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 最近一次分组结果是否仍然对应当前输入列表。
-    /// 逐项比对「分组里出现的文件」与当前输入：既比数量也比成员，
-    /// 任何一个方向变了都要求重新识别。
+    /// 最近一次分组结果是否仍然对应当前输入列表。判定规则只有一份，在 Core 里，
+    /// 界面不另写一套——两边口径不一致就会出现「这里说有组合、导出却拒绝」。
     /// </summary>
     private bool GroupingMatchesInputs()
-    {
-        if (_lastGrouping is null) return false;
-        var grouped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (string path in _lastGrouping.Groups.SelectMany(g => g.Items.Select(i => i.Path)))
-            grouped.Add(path);
-        var current = new HashSet<string>(
-            Inputs.Select(i => i.Path), StringComparer.OrdinalIgnoreCase);
-        return grouped.SetEquals(current);
-    }
+        => _lastGrouping is not null &&
+           _lastGrouping.MatchesInputs(Inputs.Select(i => i.Path).ToList());
 
     private string BuildGroupSummary(MergeGroupingResult result)
     {
@@ -741,9 +733,16 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     private async Task ExportGroupFoldersAsync()
     {
         if (IsRunning || Grouping || ExportingGroups) return;
-        if (_lastGrouping is null || Groups.Count == 0)
+        if (_lastGrouping is null)
         {
             await _ui.ShowInfoAsync("请先点「识别无损组合」，有结果后才能分配文件夹。");
+            return;
+        }
+        if (Groups.Count == 0)
+        {
+            // 识别过了，只是这些文件两两都拼不上。此时再让用户「先去识别」是错的提示——
+            // 他会反复点识别，得到同一个空结果。
+            await _ui.ShowInfoAsync("当前输入没有可无损拼接的组合，无法按组合分配文件夹。");
             return;
         }
 
@@ -753,10 +752,16 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         // 注意不能只比数量、也不能只比一个方向：新增文件和拖拽重排都能让
         // 数量相等或变多，却让 _lastGrouping 里的路径与当前列表完全对不上，
         // 而导出会对这些路径执行真正的 File.Move。
+        // 不一致时不直接拒绝，先按当前输入自动重算一次：用户按的是「导出」，
+        // 期待的是结果，不是被派去自己再点一次按钮。重算之后仍不成立才提示。
         if (!GroupingMatchesInputs())
         {
-            await _ui.ShowInfoAsync("输入列表已经变化，请重新点「识别无损组合」再导出。");
-            return;
+            await GroupByCompatibilityAsync(showDialog: false);
+            if (!GroupingMatchesInputs())
+            {
+                await _ui.ShowInfoAsync("输入列表已经变化，请重新点「识别无损组合」再导出。");
+                return;
+            }
         }
 
         string? target = await _ui.PickFolderAsync("选择导出位置（每个组合会在里面建一个文件夹）");

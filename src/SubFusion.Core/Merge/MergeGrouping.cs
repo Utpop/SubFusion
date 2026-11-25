@@ -47,6 +47,33 @@ public sealed class MergeGroupingResult
     public int GroupedCount => Groups.Sum(g => g.Items.Count);
 
     public bool HasAnyGroup => Groups.Any(g => g.Items.Count > 1);
+
+    /// <summary>
+    /// 这份分组结果是否仍然对应当前输入列表（决定「按组合分配文件夹」能不能执行）。
+    ///
+    /// 只检查一个方向：<b>分组里出现的每个文件必须仍在输入列表中</b>。
+    /// 不能要求「分组覆盖全部输入」——分组结果天然只包含能拼在一起的文件，
+    /// 拼不上的落单文件在 <see cref="Rejected"/> 里。用双向相等去判，
+    /// 只要有一个文件拼不上，结论就永远是「输入列表已经变化」，
+    /// 用户每次点导出都被劝退，等于这个功能整体不可用。
+    ///
+    /// 反过来，输入列表里多出文件不需要失效：导出只搬分组内的文件，
+    /// 多出来的那几个本来就不参与，搬走它们反而是错的。
+    /// 而分组内的文件被移除则必须失效——那说明界面上的列表已经不能代表
+    /// 这份结论了，继续导出会把一批用户以为已经排除的文件搬走。
+    /// </summary>
+    public bool MatchesInputs(IReadOnlyList<string> paths)
+    {
+        if (Groups.Count == 0) return false;
+        var current = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string path in paths)
+            if (!string.IsNullOrEmpty(path)) current.Add(path);
+
+        foreach (MergeGroup group in Groups)
+            foreach (MediaBundle bundle in group.Items)
+                if (!current.Contains(bundle.Path)) return false;
+        return true;
+    }
 }
 
 /// <summary>

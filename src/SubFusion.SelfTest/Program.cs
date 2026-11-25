@@ -2201,6 +2201,26 @@ internal static class Program
             Check("S5 每个组合一个文件夹", plan.Folders.Count == 2, "实际 " + plan.Folders.Count);
             Check("S6 文件夹名互不相同",
                   plan.Folders.Select(f => f.FolderName).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 2);
+            // ---- 「分组结果是否仍对应当前输入」：导出前的唯一闸门 ----
+            // 之前用双向集合相等判定，导致「只要有一个文件拼不上」就永远判为已变化：
+            // 界面上明明列出了组合，点导出却每次都被劝退，功能整体不可用。
+            List<string> groupPaths = grouping.Groups
+                .SelectMany(g => g.Items.Select(i => i.Path)).ToList();
+            Check("S6a 分组文件全部还在输入里时允许导出",
+                  grouping.MatchesInputs(groupPaths),
+                  "按成员判定失败");
+            // 落单文件（没能拼成一组的）不该让整份结论失效：它本来就不参与导出。
+            Check("S6b 输入里多出未成组的文件不算「列表已变化」",
+                  grouping.MatchesInputs(groupPaths.Concat(new[] { Path.Combine(work, "lone.mp4") }).ToList()),
+                  "多出的文件不应使分组结果失效");
+            // 反过来，组内文件被移除必须失效——否则会把用户以为已排除的文件搬走。
+            Check("S6c 组内文件被移除后必须重新识别",
+                  !grouping.MatchesInputs(groupPaths.Skip(1).ToList()));
+            Check("S6d 输入列表完全不同时必须重新识别",
+                  !grouping.MatchesInputs(new List<string> { Path.Combine(work, "x.mp4") }));
+            Check("S6e 空分组结果不允许导出",
+                  !new MergeGroupingResult().MatchesInputs(groupPaths));
+
             Check("S7 文件夹名体现处理方式（直接拼接 / 重封装）",
                   plan.Folders[0].FolderName.Contains("直接拼接", StringComparison.Ordinal) &&
                   plan.Folders[1].FolderName.Contains("重封装", StringComparison.Ordinal),
