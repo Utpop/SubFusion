@@ -359,7 +359,7 @@ $env:TMP = $tmp; $env:TEMP = $tmp
 
 ## 6. 测试
 
-`SelfTest` 是唯一测试入口。完整模式 **656 项断言**全部通过（`--skip-e2e` 跳过 B 组真实编码，**650 项**）。
+`SelfTest` 是唯一测试入口。完整模式 **660 项断言**全部通过（`--skip-e2e` 跳过 B 组真实编码，**654 项**）。
 
 | 分组 | 内容 |
 | --- | --- |
@@ -563,6 +563,14 @@ dotnet msbuild src/SubFusion.App/SubFusion.App.csproj -t:ComputeFilesToPublish `
   **不是文件损坏**——一份完全健康的两段 AAC 拼接输出，全片解码必然出现它。
   两个解码校验都必须经 `DecodeErrorLines` 过滤，否则每个正常输出都会被判失败，
   「校验通过才删源」永远无法通过、功能事实上被关闭。I23 用例守着这条。
+  **同一个坑的第二个入口**：只按 `[null @` 前缀过滤还不够。ffmpeg 的重复抑制会把
+  「连着刷了两次的同一条消息」折叠成一行 `    Last message repeated N times`——
+  这行没有前缀，于是漏进错误列表，样本正好是这句废话，界面就报出
+  「接缝 68.333s 处解码出错（拼接点损坏）：Last message repeated 1 times」。
+  触发条件恰恰是 AAC 拼接接缝处最常见的输出。新版 ffmpeg 还把输出侧上下文写成
+  `[out#0/null @ ...]`，同样是噪声。判定集中在 `OutputVerifier.IsNoiseLine`，
+  I19c–I19f 四个用例从「该滤的滤掉」和「不该滤的留下」两个方向守着它。
+  丢掉摘要行不会漏真错误：ffmpeg 计数前总会把原消息完整打印一次（`av_log_default_callback`）。
 - **改 UI**：页面 ViewModel 不引用任何 WinUI 类型（只依赖 `IUiServices`）；
   新增异步事件处理器一律用 `CrashGuard.FireAndForget` 包住。
 - **加页面**：在 `Pages/` 建 `XxxPage.xaml`、在 `ViewModels/` 建 VM、在 `ShellViewModel.PageMeta`

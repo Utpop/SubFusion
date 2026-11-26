@@ -15,6 +15,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- 自检要直接验证「哪些解码输出算真错误」这条判定，判定本身不宜因测试而变成公开 API -->
+    <InternalsVisibleTo Include="SubFusion.SelfTest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- .NET Core 默认不含 GB18030 / Big5 / Shift-JIS 等旧代码页，需要微软官方代码页提供程序 -->
     <PackageReference Include="System.Text.Encoding.CodePages" Version="9.0.0" />
   </ItemGroup>

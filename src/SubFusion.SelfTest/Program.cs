@@ -1656,6 +1656,35 @@ internal static class Program
                 List<string> seams = await OutputVerifier.CheckSeamsAsync(ffmpeg, o1, new[] { 2.0, 4.0 }, 120);
                 Check("I19 完好的输出在所有接缝处均可解码", seams.Count == 0, string.Join("；", seams));
 
+                // ---- 解码输出里「哪些行算真错误」的判定本身 ----
+                // 判错了后果很重：健康文件被判接缝损坏 -> 合并失败、删源永远无法执行。
+                string[] kept = OutputVerifier.DecodeErrorLines(string.Join("\n", new[]
+                {
+                    "[null @ 000001] Application provided invalid, non monotonically increasing dts to muxer in stream 1: 1 >= 0",
+                    "    Last message repeated 3 times",
+                    "[out#0/null @ 000002] Application provided invalid, non monotonically increasing dts to muxer in stream 1: 2 >= 1",
+                    "[matroska,webm @ 000003] invalid as first byte of an EBML number",
+                    "[aac @ 000004] channel element 0.0 is not allocated",
+                }));
+                Sequence("I19c 解码错误筛选只保留真正的损坏行", new[]
+                {
+                    "[matroska,webm @ 000003] invalid as first byte of an EBML number",
+                    "[aac @ 000004] channel element 0.0 is not allocated",
+                }, kept);
+                // 单独守两句最容易被漏掉的噪声。
+                // 重复抑制摘要没有 "[null @" 前缀：只按前缀过滤会让它漏进「接缝损坏」，
+                // 而它出现的时机恰好是 AAC 拼接接缝处最常见的那种输出。
+                Check("I19d 重复抑制摘要不算损坏",
+                      !OutputVerifier.DecodeErrorLines("    Last message repeated 1 times").Any());
+                Check("I19e 新版 ffmpeg 的 out#N/null 上下文不算损坏",
+                      !OutputVerifier.DecodeErrorLines(
+                          "[out#0/null @ 000002] Application provided invalid, non monotonically increasing dts").Any(),
+                      "out#0/null 前缀未被识别");
+                // 反方向：真正的损坏行绝不能被顺手滤掉。
+                Check("I19f 真实的解码错误不会被过滤掉",
+                      OutputVerifier.DecodeErrorLines(
+                          "[h264 @ 1] error while decoding MB 10 14, bytestream -10").Length == 1);
+
                 // 人为制造中段损坏：把文件中间一段抹成零，模拟"接缝处码流损坏"。
                 // 这一步是本次改动的核心证明——损坏发生在中段，头尾抽样碰不到。
                 byte[] bytes = await File.ReadAllBytesAsync(o1);

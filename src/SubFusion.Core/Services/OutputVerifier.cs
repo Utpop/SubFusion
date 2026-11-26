@@ -26,14 +26,43 @@ public static class OutputVerifier
     /// <c>[dec:aac @ ...] Error submitting packet to decoder: Invalid data found</c>，
     /// 全部在保留之列。
     /// </summary>
-    private static string[] DecodeErrorLines(string stderr)
+    internal static string[] DecodeErrorLines(string stderr)
     {
         return stderr
             .Split('\n')
             .Select(l => l.Trim())
             .Where(l => l.Length > 0)
-            .Where(l => !l.StartsWith("[null @", StringComparison.Ordinal))
+            .Where(l => !IsNoiseLine(l))
             .ToArray();
+    }
+
+    /// <summary>
+    /// 这一行是不是「不是文件损坏」的噪声。
+    ///
+    /// 两类噪声，都必须滤掉，滤漏一类就会把健康文件判成接缝损坏：
+    ///
+    /// 1) <b>null 复用器的时间戳抱怨</b>（<c>[null @ …]</c>、新版 ffmpeg 的
+    ///    <c>[out#0/null @ …]</c>）。它说的是「往垃圾桶里塞帧时时间戳有重叠」，
+    ///    实测每一份正常的两段 AAC 拼接文件都会出现。
+    ///
+    /// 2) <b>ffmpeg 的重复抑制摘要</b> <c>    Last message repeated N times</c>。
+    ///    这一行没有 <c>[null @</c> 前缀，只靠前缀过滤会漏过去。
+    ///    而它出现的时机恰恰是「同一条 null 时间戳抱怨连着刷了两次」——
+    ///    也就是 AAC 拼接接缝处最常见的输出。漏掉它，接缝校验就会对一个
+    ///    完好的文件报「拼接点损坏」，而且样本正好是这句废话。
+    ///
+    /// 丢掉摘要行不会漏掉真正的错误：ffmpeg 计数前总会把原消息完整打印一次
+    /// （见 libavutil/log.c 的 av_log_default_callback），真错误那一行仍在。
+    /// </summary>
+    internal static bool IsNoiseLine(string line)
+    {
+        if (line.StartsWith("[null @", StringComparison.Ordinal)) return true;
+        // 新版 ffmpeg 给输出侧上下文加了 out#N 前缀，形如 [out#0/null @ 0x...]。
+        if (line.StartsWith("[out#", StringComparison.Ordinal) &&
+            line.Contains("/null @", StringComparison.Ordinal)) return true;
+        // 重复抑制摘要（缩进无关，前面已经 Trim 过）。
+        if (line.Contains("Last message repeated", StringComparison.Ordinal)) return true;
+        return false;
     }
 
     /// <summary>
