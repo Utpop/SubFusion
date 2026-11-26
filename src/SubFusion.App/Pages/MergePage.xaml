@@ -439,7 +439,7 @@
                         <InfoBar Severity="Warning" IsClosable="False"
                                  IsOpen="{x:Bind ViewModel.DeleteSource, Mode=OneWay}"
                                  Title="删之前会反复确认文件是好的"
-                                 Message="删之前会核对文件大小、抽查整段视频能不能正常解码，还要检查接缝和头尾。全部通过才删；只要有一点可疑就保留原文件。删了就找不回来了。" />
+                                 Message="删之前会核对文件大小、抽查整段视频能不能正常解码，还要检查接缝和头尾。全部通过才删；只要有一点可疑就保留原文件。删了就找不回来了。合并完成后，确实被删掉的视频会自动从上面的列表移走，方便直接接着拖下一批进来。" />
                     </StackPanel>
                 </Border>
 

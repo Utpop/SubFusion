@@ -2221,6 +2221,35 @@ internal static class Program
             Check("S6e 空分组结果不允许导出",
                   !new MergeGroupingResult().MatchesInputs(groupPaths));
 
+            // ---- 合并成功后从列表里摘掉「确实被删掉」的源文件 ----
+            // 判定必须由 Core 回报的 DeletedSources 驱动：删源会因为校验不通过、
+            // 文件被占用而部分失败，那些文件还在磁盘上，界面不能凭开关状态把它们抹掉。
+            string p1 = Path.Combine(work, "ep01.mkv");
+            string p2 = Path.Combine(work, "ep02.mkv");
+            string p3 = Path.Combine(work, "ep03.mkv");
+            Sequence("S6f 没删任何文件时列表原样保留",
+                     new[] { p1, p2, p3 },
+                     InputListCleanup.Remaining(new[] { p1, p2, p3 }, Array.Empty<string>()));
+            Sequence("S6g 全部删掉时列表清空",
+                     Array.Empty<string>(),
+                     InputListCleanup.Remaining(new[] { p1, p2, p3 }, new[] { p1, p2, p3 }));
+            Sequence("S6h 只删掉一部分时其余顺序不变",
+                     new[] { p2, p3 },
+                     InputListCleanup.Remaining(new[] { p1, p2, p3 }, new[] { p1 }));
+            // 删源用的路径来自 Core 的 GetFullPath，列表里是用户拖进来的原始写法：
+            // 大小写或 ./ 差异不先归一化就会漏删，行留着指向一个已经不存在的文件。
+            Sequence("S6i 大小写不同的同一路径也能匹配上",
+                     new[] { p3 },
+                     InputListCleanup.Remaining(new[] { p1, p2, p3 }, new[] { p1.ToUpperInvariant(), p2 }));
+            Sequence("S6j 相对路径写法也能匹配到绝对路径的删除记录",
+                     new[] { p2 },
+                     InputListCleanup.Remaining(new[] { p1, p2 },
+                         new[] { Path.Combine(work, ".", "ep01.mkv") }));
+            Sequence("S6k 删除记录里混入不相关路径时不影响其它行",
+                     new[] { p1, p3 },
+                     InputListCleanup.Remaining(new[] { p1, p2, p3 },
+                         new[] { p2, Path.Combine(work, "从未在列表里.mkv") }));
+
             Check("S7 文件夹名体现处理方式（直接拼接 / 重封装）",
                   plan.Folders[0].FolderName.Contains("直接拼接", StringComparison.Ordinal) &&
                   plan.Folders[1].FolderName.Contains("重封装", StringComparison.Ordinal),

@@ -1004,6 +1004,17 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     private void ClearInputs()
     {
         if (IsRunning) return;
+        ClearInputList();
+    }
+
+    /// <summary>
+    /// 清空输入列表并把页面恢复到「还没加视频」的状态。
+    ///
+    /// 不检查 <see cref="IsRunning"/>：合并成功后的自动清空就发生在任务收尾阶段，
+    /// 那时 IsRunning 还是 true（finally 尚未执行）。是否允许清空由调用方决定。
+    /// </summary>
+    private void ClearInputList()
+    {
         Inputs.Clear();
         _selected.Clear();
         Analyzed = false;
@@ -1016,6 +1027,49 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         SetOutputName("", userEdit: false);
         OutputPath = "";
         _outputNameUserEdited = false;
+        // 分组结果是按旧输入算出来的，列表清空后必须一起作废：
+        // 留着几个「组合」卡片指向一批已经不在列表里的文件，用户点了导出只会困惑。
+        _lastGrouping = null;
+        Groups.Clear();
+        HasGroups = false;
+        GroupSummary = "";
+    }
+
+    /// <summary>
+    /// 合并成功后，把「已经被删掉的源文件」从输入列表里移除。
+    ///
+    /// 只按 Core 回报的 <see cref="MergeResult.DeletedSources"/> 判定，不在界面这侧
+    /// 用「删源开关开着」推断——删源会因为校验不通过、文件被占用而部分失败，
+    /// 那些文件还在磁盘上，从列表里抹掉只会让用户误以为已经没了。
+    ///
+    /// 全部删光时走完整清空（连输出名一起复位）；只删了一部分时保留剩下的行，
+    /// 输出路径与结果文本一律不动：用户还要靠它们找到刚做好的文件。
+    /// </summary>
+    private void RemoveDeletedSources(MergeResult result)
+    {
+        if (!result.Ok || result.DeletedSources.Count == 0) return;
+
+        List<string> remaining = SubFusion.Core.Merge.InputListCleanup.Remaining(
+            Inputs.Select(i => i.Path).ToList(), result.DeletedSources);
+
+        // 分组结论是按包含这些文件的输入算出来的，文件没了就必须作废。
+        _lastGrouping = null;
+        Groups.Clear();
+        HasGroups = false;
+
+        if (remaining.Count == 0)
+        {
+            // 全部搬空：连输出名与「还没加视频」的提示一起复位，页面回到初始态。
+            ClearInputList();
+            return;
+        }
+
+        var kept = new HashSet<string>(remaining, StringComparer.OrdinalIgnoreCase);
+        for (int i = Inputs.Count - 1; i >= 0; i--)
+            if (!kept.Contains(Inputs[i].Path)) Inputs.RemoveAt(i);
+        _selected.Clear();
+        GroupSummary = "";
+        _ = RefreshAnalysisAsync();
     }
 
     /// <summary>
@@ -1536,9 +1590,11 @@ public sealed partial class VideoMergeViewModel : ObservableObject
 
         if (result.Ok)
         {
-            // 完成后刷新输入信息（输出已存在，章节标题可能被 Core 校正过）
-            if (OutputDirectory.Length > 0) _ = RefreshAnalysisAsync();
             FinishRecord(TaskState.Completed, result.SummaryText);
+            // 源文件已经被删掉的，对应行就没有存在意义了：再点一次合并只会得到
+            // 「文件不存在」。全部删光时列表直接回到初始态，用户接着拖下一批就行。
+            // 必须在 FinishRecord 之后：清空会复位输出名等状态，而结果文本要用它们。
+            RemoveDeletedSources(result);
         }
         else
         {

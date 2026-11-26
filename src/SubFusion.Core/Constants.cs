@@ -10,7 +10,7 @@ namespace SubFusion.Core;
 public static class Constants
 {
     public const string AppName = "SubFusion 字幕与视频合并工具";
-    public const string AppVersion = "2.3.1";
+    public const string AppVersion = "2.3.2";
 
     /// <summary>并发探测媒体信息的线程数（原 PROBE_WORKERS）。</summary>
     public const int ProbeWorkers = 4;
