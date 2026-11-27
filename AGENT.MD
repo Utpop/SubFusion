@@ -52,7 +52,7 @@ SubFusion/
     │   │   ├── MediaInspector.cs     #     ffprobe → MediaBundle（流级完整参数、HDR 判定、批量探测）
     │   │   └── FfmpegTools.cs        #     ffmpeg/ffprobe 定位 + 能力/版本探测的门面
     │   ├── Merge/                    #   ★ 视频合并业务模块
-    │   │   ├── VideoMergeOptions.cs  #     参数对象（输入顺序/容器/编码/适配/音频/章节/覆盖策略）
+    │   │   ├── VideoMergeOptions.cs  #     参数对象（输入顺序/容器/编码/适配/音频/章节）
     │   │   ├── MergeCompatibility.cs #     能否无损拼接的逐参数判定
     │   │   ├── MergePlan.cs          #     统一输出参数推导 + 分段重编码/拼接命令构建
     │   │   ├── MergeResult.cs        #     结果模型（状态/阶段/输出/章节/原因/诊断）
@@ -82,6 +82,7 @@ SubFusion/
     │       ├── CommandBuilder.cs     #     字幕侧输出路径与 ffmpeg 命令、plan
     │       ├── FfmpegRunner.cs       #     `-progress` 解析、stderr 环形缓冲、取消即 Kill
     │       ├── OutputVerifier.cs     #     流结构/时长/体积/首尾解码完整性校验
+│       ├── OutputNaming.cs       #     目标已存在的文件名避让（名称 (1)…）
     │       ├── Formatting.cs         #     时长/体积/命令回显（InvariantCulture）
     │       └── BatchProcessor.cs     #     字幕批处理编排：IBatchEvents 6 类事件、按完成顺序回调
     ├── SubFusion.App/                # net8.0-windows10.0.19041.0 / win-x64 / WinUI 3 unpackaged
@@ -145,7 +146,7 @@ MergeResult r = await task.RunAsync(options, new Progress<MergeProgress>(p =>
 
 `VideoMergeOptions` 覆盖：输入列表与顺序、输出路径、容器、允许重编码、视频编码器/CRF/Preset/像素格式、
 目标分辨率 + 适配模式、目标帧率、音频策略/编码/码率/采样率/声道布局、自动章节与自定义标题、
-覆盖策略、校验开关、临时目录、探测超时。
+校验开关、临时目录、探测超时。输出冲突不设开关：引擎固定自动改名（见 `OutputNaming`）。
 
 `MergeResult` 覆盖：任务 ID、状态（Completed/Failed/Cancelled）、阶段、输出路径、最终 `MediaBundle`、
 章节列表、不兼容原因、是否复制视频/音频、提示信息、错误文本、诊断日志、耗时。
@@ -359,7 +360,7 @@ $env:TMP = $tmp; $env:TEMP = $tmp
 
 ## 6. 测试
 
-`SelfTest` 是唯一测试入口。完整模式 **660 项断言**全部通过（`--skip-e2e` 跳过 B 组真实编码，**654 项**）。
+`SelfTest` 是唯一测试入口。完整模式 **676 项断言**全部通过（`--skip-e2e` 跳过 B 组真实编码，**662 项**）。
 
 | 分组 | 内容 |
 | --- | --- |

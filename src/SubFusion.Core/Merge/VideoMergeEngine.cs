@@ -69,9 +69,12 @@ public sealed class VideoMergeEngine
             if (string.IsNullOrEmpty(outputDir))
                 return Fail(taskId, MergeStage.Validating, "输出路径无效：" + options.OutputPath, diagnostics, startedAt);
             Directory.CreateDirectory(outputDir);
-            if (File.Exists(outputPath) && !options.Overwrite)
-                return Fail(taskId, MergeStage.Validating,
-                    "输出文件已存在且未允许覆盖：" + Path.GetFileName(outputPath), diagnostics, startedAt);
+            // 目标已存在时自动避让，而不是覆盖或直接失败：
+            // 覆盖会静默毁掉上一份成品，直接失败又会让用户每次都要手动改名字。
+            string requestedOutputPath = outputPath;
+            outputPath = OutputNaming.Unique(outputPath);
+            if (!string.Equals(outputPath, requestedOutputPath, StringComparison.OrdinalIgnoreCase))
+                notices.Add("目标文件已存在，本次另存为 " + Path.GetFileName(outputPath));
 
             // 每个任务独立临时目录：绝不与其它任务共用文件名。
             //

@@ -56,8 +56,11 @@ public sealed class VideoTrimOptions
     /// <summary>输出容器：mkv / mp4。默认 mkv——mp4 无法表示负时间戳，会造成音轨起点错位。</summary>
     public string Container { get; set; } = "mkv";
 
-    /// <summary>目标已存在时是否覆盖；false 时任务直接失败，不覆盖任何数据。</summary>
-    public bool Overwrite { get; set; } = true;
+    /// <summary>
+    /// 目标已存在时自动改用「名称 (1).mkv」这类未被占用的名字，不覆盖已有文件；
+    /// 实际写入的文件名会写在结果的提示里。
+    /// </summary>
+    public bool AutoRenameOnConflict => true;
 
     /// <summary>裁剪完成后校验输出（时长 / 流结构 / 音画同步 / 首尾解码）。</summary>
     public bool VerifyOutput { get; set; } = true;

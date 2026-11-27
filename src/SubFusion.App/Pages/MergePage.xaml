@@ -33,7 +33,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Spacing="2">
                     <TextBlock Text="视频合并" Style="{StaticResource PageTitleStyle}" />
-                    <TextBlock Text="列表从上到下就是合并顺序。参数一致就直接拼起来（不损画质），不一致才按下面的设置重新编码。"
+                    <TextBlock Text="列表自上而下即合并顺序。参数一致时直接拼接（不损失画质）；参数不一致时，按下列设置重新编码。"
                                Style="{StaticResource PageSubtitleStyle}" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
@@ -53,7 +53,7 @@
                 </AppBarButton>
                 <AppBarSeparator />
                 <AppBarButton Label="置顶" Command="{x:Bind ViewModel.MoveToTopCommand}"
-                              ToolTipService.ToolTip="把选中的视频移到最前（可多选，保持选中项之间的顺序）">
+                              ToolTipService.ToolTip="将选中的视频移至最前（支持多选，保持选中项之间的相对顺序）">
                     <AppBarButton.Icon><FontIcon Glyph="&#xE74A;"/></AppBarButton.Icon>
                 </AppBarButton>
                 <AppBarButton Label="上移" Command="{x:Bind ViewModel.MoveUpCommand}">
@@ -63,15 +63,15 @@
                     <AppBarButton.Icon><FontIcon Glyph="&#xE70D;"/></AppBarButton.Icon>
                 </AppBarButton>
                 <AppBarButton Label="置底" Command="{x:Bind ViewModel.MoveToBottomCommand}"
-                              ToolTipService.ToolTip="把选中的视频移到最后（可多选，保持选中项之间的顺序）">
+                              ToolTipService.ToolTip="将选中的视频移至最后（支持多选，保持选中项之间的相对顺序）">
                     <AppBarButton.Icon><FontIcon Glyph="&#xE74B;"/></AppBarButton.Icon>
                 </AppBarButton>
                 <AppBarButton Label="按名称排序" Command="{x:Bind ViewModel.SortByNameCommand}"
-                              ToolTipService.ToolTip="按文件名自然排序（第2集 排在 第10集 之前）">
+                              ToolTipService.ToolTip="按文件名自然排序（第 2 集排在 第 10 集之前）">
                     <AppBarButton.Icon><FontIcon Glyph="&#xE8CB;"/></AppBarButton.Icon>
                 </AppBarButton>
                 <AppBarButton Label="识别无损组合" Command="{x:Bind ViewModel.DetectGroupsCommand}"
-                              ToolTipService.ToolTip="找出可以直接无损拼接的视频组合">
+                              ToolTipService.ToolTip="识别可直接无损拼接的视频组合">
                     <AppBarButton.Icon><FontIcon Glyph="&#xE721;"/></AppBarButton.Icon>
                 </AppBarButton>
                 <AppBarButton Label="移除选中" Command="{x:Bind ViewModel.RemoveSelectedCommand}">
@@ -106,7 +106,7 @@
                         <ColumnDefinition Width="110" />
                         <ColumnDefinition Width="2*" MinWidth="180" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="文件（从上到下就是合并顺序）" Style="{StaticResource CaptionStyle}" FontWeight="SemiBold" />
+                    <TextBlock Grid.Column="0" Text="文件（自上而下即合并顺序）" Style="{StaticResource CaptionStyle}" FontWeight="SemiBold" />
                     <TextBlock Grid.Column="1" Text="分辨率" Style="{StaticResource CaptionStyle}" FontWeight="SemiBold" />
                     <TextBlock Grid.Column="2" Text="时长" Style="{StaticResource CaptionStyle}" FontWeight="SemiBold" />
                     <TextBlock Grid.Column="3" Text="视频" Style="{StaticResource CaptionStyle}" FontWeight="SemiBold" />
@@ -175,9 +175,9 @@
                             Visibility="{x:Bind ViewModel.ShowEmptyState, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
                     <FontIcon Glyph="&#xE714;" FontSize="40"
                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                    <TextBlock Text="还没加视频" Style="{StaticResource EmptyStateTitleStyle}" />
+                    <TextBlock Text="尚未添加视频" Style="{StaticResource EmptyStateTitleStyle}" />
                     <TextBlock Style="{StaticResource EmptyStateBodyStyle}"
-                               Text="把视频拖进窗口，或点上面的「添加视频 / 添加文件夹」。顺序可以拖动，也可以用上移/下移按钮调整。" />
+                               Text="将视频拖放至窗口，或点击上方「添加视频 / 添加文件夹」。顺序可拖动调整，也可使用上移、下移按钮。" />
                 </StackPanel>
             </Grid>
         </Border>
@@ -193,7 +193,7 @@
                     <StackPanel Spacing="8">
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <FontIcon Glyph="&#xE9D9;" FontSize="14" VerticalAlignment="Center" />
-                            <TextBlock Text="打算怎么处理" Style="{StaticResource SectionTitleStyle}" />
+                            <TextBlock Text="处理策略" Style="{StaticResource SectionTitleStyle}" />
                         </StackPanel>
                         <TextBlock Text="{x:Bind ViewModel.StrategyText, Mode=OneWay}" FontWeight="SemiBold"
                                    TextWrapping="Wrap" />
@@ -260,16 +260,16 @@
                     <StackPanel Spacing="8">
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <FontIcon Glyph="&#xE721;" FontSize="14" VerticalAlignment="Center" />
-                            <TextBlock Text="可以直接拼、不损画质的组合" Style="{StaticResource SectionTitleStyle}" />
+                            <TextBlock Text="可无损拼接的组合" Style="{StaticResource SectionTitleStyle}" />
                             <ProgressRing IsActive="{x:Bind ViewModel.Grouping, Mode=OneWay}" Width="14" Height="14" />
                         </StackPanel>
                         <TextBlock Text="{x:Bind ViewModel.GroupSummary, Mode=OneWay}"
                                    Style="{StaticResource CaptionStyle}" TextWrapping="Wrap" />
                         <!-- 把组合分配到各自文件夹：这是移动，原位置不再保留 -->
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button Content="移动到文件夹…" FontSize="12" Padding="12,4"
+                            <Button Content="移动至文件夹…" FontSize="12" Padding="12,4"
                                     Command="{x:Bind ViewModel.ExportGroupFoldersCommand}"
-                                    ToolTipService.ToolTip="把每个可无损拼接的组合移动到独立文件夹里，方便逐个检查。这是移动：原位置不再保留这些文件。" />
+                                    ToolTipService.ToolTip="将每个可无损拼接的组合移动至独立文件夹，便于逐个检查。此操作为移动：原位置不再保留这些文件。" />
                             <ProgressBar Value="{x:Bind ViewModel.ExportProgress, Mode=OneWay}" Maximum="100"
                                          Width="140" VerticalAlignment="Center"
                                          Visibility="{x:Bind ViewModel.ExportingGroups, Mode=OneWay, Converter={StaticResource BoolToVisible}}" />
@@ -290,7 +290,7 @@
                                                        VerticalAlignment="Center" />
                                             <!-- x:Bind 在 DataTemplate 内绑定的是数据项本身，命令从页面 ViewModel 取仍需走根元素路径；
                                                  此处用 Tag 传递组合对象，由 Click 处理器转交给 ViewModel，避免两套绑定混用。 -->
-                                            <Button Content="用这组" FontSize="11" Padding="8,2"
+                                            <Button Content="使用此组合" FontSize="11" Padding="8,2"
                                                     Tag="{x:Bind}"
                                                     Click="UseGroup_Click" />
                                         </StackPanel>
@@ -312,7 +312,7 @@
                 <!-- 输出 -->
                 <Border Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="10">
-                        <TextBlock Text="保存位置" Style="{StaticResource SectionTitleStyle}" />
+                        <TextBlock Text="输出位置" Style="{StaticResource SectionTitleStyle}" />
                         <StackPanel Spacing="4">
                             <TextBlock Text="输出格式" Style="{StaticResource FieldLabelStyle}" />
                             <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.Containers}"
@@ -351,7 +351,8 @@
                         </StackPanel>
                         <TextBlock Text="{x:Bind ViewModel.OutputPath, Mode=OneWay}" Style="{StaticResource MonoTextStyle}"
                                    ToolTipService.ToolTip="{x:Bind ViewModel.OutputPath, Mode=OneWay}" />
-                        <CheckBox Content="目标已存在时覆盖" IsChecked="{x:Bind ViewModel.Overwrite, Mode=TwoWay}" />
+                        <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
+                                   Text="目标位置存在同名文件时不覆盖，程序将自动改用「名称 (1)」等未被占用的文件名，并在结果中注明实际写入的文件名。" />
                     </StackPanel>
                 </Border>
 
@@ -359,8 +360,8 @@
                 <Border Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="10">
                         <TextBlock Text="需要重新编码时的设置" Style="{StaticResource SectionTitleStyle}" />
-                        <CheckBox Content="参数不一样时自动重新编码" IsChecked="{x:Bind ViewModel.AllowReencode, Mode=TwoWay}"
-                                  ToolTipService.ToolTip="关闭后，输入参数不一致时任务会直接失败并列出原因" />
+                        <CheckBox Content="参数不一致时自动重新编码" IsChecked="{x:Bind ViewModel.AllowReencode, Mode=TwoWay}"
+                                  ToolTipService.ToolTip="关闭后，输入参数不一致时任务将直接失败并列出原因" />
                         <Grid ColumnSpacing="8" RowSpacing="8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -396,7 +397,7 @@
                             </StackPanel>
 
                             <StackPanel Grid.Row="1" Grid.Column="0" Spacing="4">
-                                <TextBlock Text="画质（数字越小越清晰、文件越大）" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="画质（数值越小越清晰，文件体积越大）" Style="{StaticResource FieldLabelStyle}" />
                                 <NumberBox Minimum="0" Maximum="51" SmallChange="1" SpinButtonPlacementMode="Compact"
                                            Value="{x:Bind ViewModel.Crf, Mode=TwoWay}" />
                             </StackPanel>
@@ -423,7 +424,7 @@
                                             </ComboBox.ItemTemplate>
                                         </ComboBox>
                                 <TextBlock Style="{StaticResource CaptionStyle}"
-                                           Text="完整显示：画面全保留，不够的地方补黑边；铺满画面：填满画面，多出来的裁掉；直接拉满：可能变形。程序会按最大的那个视频定尺寸。" />
+                                           Text="完整显示：画面全部保留，不足处补黑边；铺满画面：填满画面，超出部分裁切；拉伸填充：可能导致画面变形。程序按输入中的最大分辨率确定目标尺寸。" />
                             </StackPanel>
                         </Grid>
                     </StackPanel>
@@ -433,13 +434,13 @@
                 <Border Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="8">
                         <TextBlock Text="完成后处理" Style="{StaticResource SectionTitleStyle}" />
-                        <CheckBox Content="确认没问题后删掉原来的视频"
+                        <CheckBox Content="校验通过后删除原始视频"
                                   IsChecked="{x:Bind ViewModel.DeleteSource, Mode=TwoWay}"
-                                  ToolTipService.ToolTip="合并成功且输出通过校验后，删除参与合并的原始视频。不可撤销。" />
+                                  ToolTipService.ToolTip="合并成功且输出通过校验后，删除参与合并的原始视频。此操作不可撤销。" />
                         <InfoBar Severity="Warning" IsClosable="False"
                                  IsOpen="{x:Bind ViewModel.DeleteSource, Mode=OneWay}"
-                                 Title="删之前会反复确认文件是好的"
-                                 Message="删之前会核对文件大小、抽查整段视频能不能正常解码，还要检查接缝和头尾。全部通过才删；只要有一点可疑就保留原文件。删了就找不回来了。合并完成后，确实被删掉的视频会自动从上面的列表移走，方便直接接着拖下一批进来。" />
+                                 Title="删除前将逐项确认文件完好"
+                                 Message="删除前将核对文件大小、抽样解码整段视频，并检查接缝与首尾。全部通过后才会删除；任一项存疑则保留原文件。删除后无法恢复。合并完成后，确实被删除的视频将自动从上方列表移出，便于继续添加下一批。" />
                     </StackPanel>
                 </Border>
 
@@ -447,31 +448,31 @@
                 <Border Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="10">
                         <TextBlock Text="章节与检查" Style="{StaticResource SectionTitleStyle}" />
-                        <CheckBox Content="每段视频生成一章（MKV 格式）"
+                        <CheckBox Content="每段视频生成一章（仅 MKV 格式）"
                                   IsChecked="{x:Bind ViewModel.AutoChapters, Mode=TwoWay}"
                                   IsEnabled="{x:Bind ViewModel.ChaptersAvailable, Mode=OneWay}" />
                         <TextBlock Style="{StaticResource CaptionStyle}"
-                                   Text="章节名字在左边每个文件的「章节标题」里改；时间长度按实际成品自动对齐，写完会再读一遍核对。" />
-                        <CheckBox Content="做完后检查文件（画面、时长、章节、能不能解码）"
+                                   Text="章节标题可在左侧每个文件的「章节标题」中修改；时间长度按成品实际时长自动对齐，写入后将重新读取核对。" />
+                        <CheckBox Content="完成后校验文件（画面、时长、章节、是否可解码）"
                                   IsChecked="{x:Bind ViewModel.VerifyOutput, Mode=TwoWay}" />
 
-                        <CheckBox Content="只重做参数不一样的那一小段"
+                        <CheckBox Content="仅重编码参数不一致的片段"
                                   IsChecked="{x:Bind ViewModel.PartialReencode, Mode=TwoWay}"
-                                  ToolTipService.ToolTip="大多数片段参数一致时，只重编码不合群的那几个，其余保持原样（不重新编码）。默认开启。" />
+                                  ToolTipService.ToolTip="多数片段参数一致时，仅重编码与之不符的少数片段，其余保持原样（不重新编码）。默认启用。" />
                         <TextBlock Style="{StaticResource CaptionStyle}"
-                                   Text="开启后：大多数视频参数相同时，只重做不合群的那几段，其余画面一点不变。做完会再核对能否拼上，不行就自动改成全部重做。" />
+                                   Text="启用后：多数视频参数相同时，仅重编码与之不符的片段，其余画面完全不变。完成后将再次核对能否拼接；若不能，则自动改为全部重新编码。" />
 
-                        <CheckBox Content="视频没下载完整时，能用多少就用多少"
+                        <CheckBox Content="输入文件不完整时保留可用部分"
                                   IsChecked="{x:Bind ViewModel.SalvageTruncatedInputs, Mode=TwoWay}"
-                                  ToolTipService.ToolTip="下载中断或录制崩溃的文件，容器头仍写着完整时长，数据却在中途就断了。开启后会自动只保留读得出来的部分，并在结果里说明少了多少秒。" />
+                                  ToolTipService.ToolTip="下载中断或录制异常的文件，容器头仍声明完整时长，而数据在中途已截断。启用后将仅保留可读取的部分，并在结果中说明缺失的秒数。" />
                         <TextBlock Style="{StaticResource CaptionStyle}"
-                                   Text="关掉：发现文件不完整就直接停下，告诉你是哪个文件、少了多久。打开：把能用的部分拼进去，成品依然能正常播放。" />
+                                   Text="关闭：检测到文件不完整时立即停止，并指出具体文件与缺失时长。启用：将可用部分拼接，成品仍可正常播放。" />
 
-                        <CheckBox Content="直接拼接失败时，自动改成重新编码再试一次"
+                        <CheckBox Content="直接拼接失败时自动改为重新编码重试"
                                   IsChecked="{x:Bind ViewModel.AutoFallbackOnFailure, Mode=TwoWay}"
-                                  ToolTipService.ToolTip="默认关闭。参数一致时直接拼接极少失败，真失败通常是源文件本身有问题。" />
+                                  ToolTipService.ToolTip="默认关闭。参数一致时直接拼接极少失败，一旦失败通常源于源文件本身。" />
                         <TextBlock Style="{StaticResource CaptionStyle}"
-                                   Text="建议关着：拼不上就立刻告诉你原因，不白等。打开后：失败时会把全部视频重新编码再试，时间会明显变长。" />
+                                   Text="建议保持关闭：无法拼接时立即给出原因，无需等待。启用后：失败时将对全部视频重新编码重试，耗时明显增加。" />
                     </StackPanel>
                 </Border>
             </StackPanel>

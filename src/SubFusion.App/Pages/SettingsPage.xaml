@@ -15,7 +15,7 @@
 
         <StackPanel Grid.Row="0" Spacing="2">
             <TextBlock Text="设置" Style="{StaticResource PageTitleStyle}" />
-            <TextBlock Text="这里的改动会自动保存，下次打开程序依然有效；字幕合并和视频合并页面会立刻跟着变。"
+            <TextBlock Text="此处的修改将自动保存，下次启动程序时依然有效；各功能页面会立即应用。"
                        Style="{StaticResource PageSubtitleStyle}" />
         </StackPanel>
 
@@ -40,7 +40,7 @@
                             </StackPanel>
                         </Grid>
                         <TextBlock Style="{StaticResource CaptionStyle}"
-                                   Text="换主题后整个软件马上跟着变，不用重启。" />
+                                   Text="切换主题后界面立即生效，无需重启。" />
                     </StackPanel>
                 </Border>
 
@@ -64,13 +64,13 @@
 
                             <TextBlock Grid.Row="0" Text="ffmpeg" Style="{StaticResource FieldLabelStyle}" />
                             <TextBox Grid.Row="0" Grid.Column="1" Text="{x:Bind ViewModel.FfmpegPath, Mode=TwoWay}"
-                                     PlaceholderText="留空就自动找（一般不用填）" />
+                                     PlaceholderText="留空则自动查找（通常无需填写）" />
                             <Button Grid.Row="0" Grid.Column="2" Content="浏览…" Style="{StaticResource ToolbarButtonStyle}"
                                     Command="{x:Bind ViewModel.PickFfmpegCommand}" />
 
                             <TextBlock Grid.Row="1" Text="ffprobe" Style="{StaticResource FieldLabelStyle}" />
                             <TextBox Grid.Row="1" Grid.Column="1" Text="{x:Bind ViewModel.FfprobePath, Mode=TwoWay}"
-                                     PlaceholderText="留空就自动找（一般不用填）" />
+                                     PlaceholderText="留空则自动查找（通常无需填写）" />
                             <Button Grid.Row="1" Grid.Column="2" Content="浏览…" Style="{StaticResource ToolbarButtonStyle}"
                                     Command="{x:Bind ViewModel.PickFfprobeCommand}" />
 
@@ -158,7 +158,7 @@
                                 </ComboBox.ItemTemplate>
                             </ComboBox>
 
-                            <TextBlock Grid.Row="2" Text="画质（数字越小越清晰、文件越大）" Style="{StaticResource FieldLabelStyle}" />
+                            <TextBlock Grid.Row="2" Text="画质（数值越小越清晰，文件体积越大）" Style="{StaticResource FieldLabelStyle}" />
                             <NumberBox Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="51" SmallChange="1"
                                        SpinButtonPlacementMode="Compact"
                                        Value="{x:Bind ViewModel.Crf, Mode=TwoWay}" />
@@ -173,11 +173,11 @@
                                 </ComboBox.ItemTemplate>
                             </ComboBox>
 
-                            <TextBlock Grid.Row="3" Text="同时处理几个" Style="{StaticResource FieldLabelStyle}" />
+                            <TextBlock Grid.Row="3" Text="并发处理数" Style="{StaticResource FieldLabelStyle}" />
                             <NumberBox Grid.Row="3" Grid.Column="1" Minimum="1" Maximum="4" SmallChange="1"
                                        SpinButtonPlacementMode="Compact"
                                        Value="{x:Bind ViewModel.Workers, Mode=TwoWay}" />
-                            <TextBlock Grid.Row="3" Grid.Column="2" Text="文件名末尾加" Style="{StaticResource FieldLabelStyle}" />
+                            <TextBlock Grid.Row="3" Grid.Column="2" Text="文件名后缀" Style="{StaticResource FieldLabelStyle}" />
                             <TextBox Grid.Row="3" Grid.Column="3" Text="{x:Bind ViewModel.Suffix, Mode=TwoWay}"
                                      PlaceholderText="例如 _sub" />
 
@@ -188,14 +188,14 @@
                         </Grid>
 
                         <StackPanel Spacing="2">
-                            <CheckBox Content="自动修正字幕乱码（转成通用编码）" IsChecked="{x:Bind ViewModel.ConvertEncoding, Mode=TwoWay}" />
-                            <CheckBox Content="连子文件夹里的文件一起找" IsChecked="{x:Bind ViewModel.Recursive, Mode=TwoWay}" />
-                            <CheckBox Content="保留视频里本来就有的字幕" IsChecked="{x:Bind ViewModel.KeepExistingSubs, Mode=TwoWay}" />
+                            <CheckBox Content="自动修正字幕乱码（转为通用编码）" IsChecked="{x:Bind ViewModel.ConvertEncoding, Mode=TwoWay}" />
+                            <CheckBox Content="包含子文件夹中的文件" IsChecked="{x:Bind ViewModel.Recursive, Mode=TwoWay}" />
+                            <CheckBox Content="保留视频中原有的字幕" IsChecked="{x:Bind ViewModel.KeepExistingSubs, Mode=TwoWay}" />
                             <CheckBox Content="保留文件的标题、作者等信息" IsChecked="{x:Bind ViewModel.KeepMetadata, Mode=TwoWay}" />
-                            <CheckBox Content="名字一样时直接覆盖，不再询问" IsChecked="{x:Bind ViewModel.Overwrite, Mode=TwoWay}" />
-                            <CheckBox Content="做完后检查文件有没有坏" IsChecked="{x:Bind ViewModel.Verify, Mode=TwoWay}" />
-                            <CheckBox Content="硬字幕时把每条字幕都烧进去" IsChecked="{x:Bind ViewModel.HardMulti, Mode=TwoWay}" />
-                            <CheckBox Content="完成后直接用新文件替换原视频（会删原文件）" IsChecked="{x:Bind ViewModel.ReplaceSource, Mode=TwoWay}" />
+                            <CheckBox Content="同名时直接覆盖，不再询问" IsChecked="{x:Bind ViewModel.Overwrite, Mode=TwoWay}" />
+                            <CheckBox Content="完成后校验文件完整性" IsChecked="{x:Bind ViewModel.Verify, Mode=TwoWay}" />
+                            <CheckBox Content="烧录硬字幕时包含全部字幕轨" IsChecked="{x:Bind ViewModel.HardMulti, Mode=TwoWay}" />
+                            <CheckBox Content="完成后用新文件替换原视频（将删除原文件）" IsChecked="{x:Bind ViewModel.ReplaceSource, Mode=TwoWay}" />
                         </StackPanel>
 
                         <Grid ColumnSpacing="12">
@@ -206,11 +206,11 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="默认输出目录" Style="{StaticResource FieldLabelStyle}" />
                             <TextBox Grid.Column="1" Text="{x:Bind ViewModel.OutputDir, Mode=TwoWay}"
-                                     PlaceholderText="留空则在每一次任务时选择" />
+                                     PlaceholderText="留空则在每次任务时选择" />
                             <Button Grid.Column="2" Content="浏览…" Style="{StaticResource ToolbarButtonStyle}"
                                     Command="{x:Bind ViewModel.ChooseSubtitleOutputDirCommand}" />
                         </Grid>
-                        <CheckBox Content="加文件时自动把保存位置改成文件所在目录"
+                        <CheckBox Content="添加文件时自动将输出位置设为文件所在目录"
                                   IsChecked="{x:Bind ViewModel.SyncOutputDir, Mode=TwoWay}" />
                     </StackPanel>
                 </Border>
@@ -254,7 +254,7 @@
                                 </ComboBox.ItemTemplate>
                             </ComboBox>
 
-                            <TextBlock Grid.Row="1" Text="画质（数字越小越清晰、文件越大）" Style="{StaticResource FieldLabelStyle}" />
+                            <TextBlock Grid.Row="1" Text="画质（数值越小越清晰，文件体积越大）" Style="{StaticResource FieldLabelStyle}" />
                             <NumberBox Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="51" SmallChange="1"
                                        SpinButtonPlacementMode="Compact"
                                        Value="{x:Bind ViewModel.MergeCrf, Mode=TwoWay}" />
@@ -292,11 +292,11 @@
                         </Grid>
 
                         <StackPanel Spacing="2">
-                            <CheckBox Content="视频参数不一样时，自动重新编码后再合并"
+                            <CheckBox Content="视频参数不一致时自动重新编码后再合并"
                                       IsChecked="{x:Bind ViewModel.MergeAllowReencode, Mode=TwoWay}" />
-                            <CheckBox Content="存成 MKV 时自动生成章节（每段一章）"
+                            <CheckBox Content="输出 MKV 时自动生成章节（每段一章）"
                                       IsChecked="{x:Bind ViewModel.MergeChapters, Mode=TwoWay}" />
-                            <CheckBox Content="做完后检查文件有没有坏"
+                            <CheckBox Content="完成后校验文件完整性"
                                       IsChecked="{x:Bind ViewModel.MergeVerify, Mode=TwoWay}" />
                         </StackPanel>
 
@@ -308,7 +308,7 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="默认输出目录" Style="{StaticResource FieldLabelStyle}" />
                             <TextBox Grid.Column="1" Text="{x:Bind ViewModel.MergeOutputDir, Mode=TwoWay}"
-                                     PlaceholderText="留空就存在第一个视频的目录里" />
+                                     PlaceholderText="留空则保存到第一个视频所在目录" />
                             <Button Grid.Column="2" Content="浏览…" Style="{StaticResource ToolbarButtonStyle}"
                                     Command="{x:Bind ViewModel.ChooseMergeOutputDirCommand}" />
                         </Grid>
@@ -322,7 +322,7 @@
                         <TextBlock Text="{x:Bind ViewModel.ConfigPath}" Style="{StaticResource MonoTextStyle}"
                                    IsTextSelectionEnabled="True" />
                         <TextBlock Style="{StaticResource CaptionStyle}"
-                                   Text="改动会自动存到这个文件；文件里其它不认识的内容会原样留着，不会弄丢。" />
+                                   Text="修改将自动保存到此文件；文件中其他无法识别的配置项将原样保留，不会丢失。" />
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <Button Content="打开所在目录" Style="{StaticResource ToolbarButtonStyle}"
                                     Command="{x:Bind ViewModel.OpenConfigFolderCommand}" />

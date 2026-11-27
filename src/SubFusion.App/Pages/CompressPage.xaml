@@ -35,7 +35,7 @@
                 <StackPanel Spacing="2">
                     <TextBlock Text="视频压制" Style="{StaticResource PageTitleStyle}" />
                     <TextBlock Style="{StaticResource PageSubtitleStyle}"
-                               Text="把视频重新压一遍以减小体积。有显卡时会自动用显卡编码（本机检测到 AMD 显卡时走 AMF），压缩速度通常是 CPU 编码的数倍；最终用了哪个编码器会如实写在下方和任务详情里。" />
+                               Text="重新编码视频以减小文件体积。检测到可用显卡时将优先使用硬件编码（AMD 显卡使用 AMF），速度通常为 CPU 编码的数倍；实际使用的编码器会如实显示在下方及任务详情中。" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <ProgressRing IsActive="{x:Bind ViewModel.Analyzing, Mode=OneWay}" Width="18" Height="18" />
@@ -82,7 +82,7 @@
                                        Foreground="{ThemeResource StatusDangerBrush}" TextWrapping="Wrap"
                                        Visibility="{x:Bind ViewModel.AnalysisError, Mode=OneWay, Converter={StaticResource NotEmptyToVisible}}" />
                             <TextBlock Style="{StaticResource CaptionStyle}"
-                                       Text="把视频文件拖到窗口里，或点上方「选择视频」。"
+                                       Text="将视频文件拖放至窗口，或点击上方「选择视频」。"
                                        Visibility="{x:Bind ViewModel.HasInput, Mode=OneWay, Converter={StaticResource BoolToVisible}, ConverterParameter=invert}" />
                         </StackPanel>
                     </Grid>
@@ -98,7 +98,7 @@
                                 </Grid.ColumnDefinitions>
                                 <FontIcon Glyph="&#xE945;" FontSize="14" VerticalAlignment="Center"
                                           Foreground="{ThemeResource StatusInfoBrush}" />
-                                <TextBlock Grid.Column="1" Text="本机编码器（真实初始化检测）"
+                                <TextBlock Grid.Column="1" Text="本机编码器（经实际初始化检测）"
                                            Style="{StaticResource FieldLabelStyle}" />
                             </Grid>
                             <TextBlock Text="{x:Bind ViewModel.EncoderSummary, Mode=OneWay}"
@@ -139,7 +139,7 @@
                 <!-- 编码方式 -->
                 <Border Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="10">
-                        <TextBlock Text="编码方式" Style="{StaticResource SectionTitleStyle}" />
+                        <TextBlock Text="编码设置" Style="{StaticResource SectionTitleStyle}" />
 
                         <StackPanel Spacing="4">
                             <TextBlock Text="编码格式" Style="{StaticResource FieldLabelStyle}" />
@@ -151,7 +151,7 @@
                         </StackPanel>
 
                         <StackPanel Spacing="4">
-                            <TextBlock Text="用谁来编码" Style="{StaticResource FieldLabelStyle}" />
+                            <TextBlock Text="编码器选择" Style="{StaticResource FieldLabelStyle}" />
                             <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.PreferenceOptions}"
                                       DisplayMemberPath="Label"
                                       SelectedItem="{x:Bind ViewModel.SelectedPreference, Mode=TwoWay}" />
@@ -165,23 +165,23 @@
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
                             <StackPanel Grid.Column="0" Spacing="4">
-                                <TextBlock Text="显卡品牌" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="显卡厂商" Style="{StaticResource FieldLabelStyle}" />
                                 <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.BackendOptions}"
                                           DisplayMemberPath="Label"
                                           SelectedItem="{x:Bind ViewModel.SelectedBackend, Mode=TwoWay}"
                                           IsEnabled="{x:Bind ViewModel.IsHardwareAllowed, Mode=OneWay}" />
                             </StackPanel>
                             <StackPanel Grid.Column="1" Spacing="4">
-                                <TextBlock Text="显卡编码质量" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="硬件编码质量档" Style="{StaticResource FieldLabelStyle}" />
                                 <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.HardwareQualities}"
                                           SelectedItem="{x:Bind ViewModel.HardwareQuality, Mode=TwoWay}"
                                           IsEnabled="{x:Bind ViewModel.IsHardwareAllowed, Mode=OneWay}" />
                             </StackPanel>
                         </Grid>
                         <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
-                                   Text="显卡编码质量：越靠上的档位越快、文件越大；「quality」最慢但画面最好。硬件编码不接受 CPU 的「编码速度」参数，两者不能混用。" />
+                                   Text="硬件编码质量档：档位越靠前速度越快、文件体积越大；「quality」最慢但画质最佳。硬件编码不适用 CPU 的「编码速度」参数，两者不可混用。" />
 
-                        <CheckBox Content="用显卡解码源视频" IsChecked="{x:Bind ViewModel.HardwareDecodeEnabled, Mode=TwoWay}"
+                        <CheckBox Content="使用硬件解码源视频" IsChecked="{x:Bind ViewModel.HardwareDecodeEnabled, Mode=TwoWay}"
                                   IsEnabled="{x:Bind ViewModel.IsHardwareAllowed, Mode=OneWay}" />
                         <TextBlock Text="{x:Bind ViewModel.HardwareDecodeText, Mode=OneWay}"
                                    Style="{StaticResource CaptionStyle}" TextWrapping="Wrap" />
@@ -194,7 +194,7 @@
                         <TextBlock Text="画质与体积" Style="{StaticResource SectionTitleStyle}" />
 
                         <StackPanel Spacing="4">
-                            <TextBlock Text="怎么决定体积" Style="{StaticResource FieldLabelStyle}" />
+                            <TextBlock Text="体积控制方式" Style="{StaticResource FieldLabelStyle}" />
                             <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.RateOptions}"
                                       DisplayMemberPath="Label"
                                       SelectedItem="{x:Bind ViewModel.SelectedRate, Mode=TwoWay}" />
@@ -204,11 +204,11 @@
 
                         <StackPanel Spacing="4"
                                     Visibility="{x:Bind ViewModel.IsQualityMode, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
-                            <TextBlock Text="画质档（越小越清晰、文件越大）" Style="{StaticResource FieldLabelStyle}" />
+                            <TextBlock Text="画质档（数值越小越清晰，文件体积越大）" Style="{StaticResource FieldLabelStyle}" />
                             <NumberBox Minimum="0" Maximum="51" SmallChange="1" SpinButtonPlacementMode="Compact"
                                        Value="{x:Bind ViewModel.Quality, Mode=TwoWay}" />
                             <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
-                                       Text="经验值：18 接近无损；23 画质与体积平衡（推荐）；28 明显省空间；32 以上细节会糊。" />
+                                       Text="参考值：18 接近无损；23 画质与体积均衡（推荐）；28 明显节省空间；32 以上细节明显损失。" />
                         </StackPanel>
 
                         <StackPanel Spacing="4"
@@ -218,12 +218,12 @@
                                        SpinButtonPlacementMode="Compact"
                                        Value="{x:Bind ViewModel.BitrateKbps, Mode=TwoWay}" />
                             <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
-                                       Text="1080p 常用 2000~6000，720p 常用 1000~3000。填太低会明显糊，填太高可能比原片还大。" />
+                                       Text="1080p 常用 2000~6000，720p 常用 1000~3000。设置过低将明显损失细节，设置过高可能导致输出大于原文件。" />
                         </StackPanel>
 
                         <StackPanel Spacing="4"
                                     Visibility="{x:Bind ViewModel.IsSoftwareOnly, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
-                            <TextBlock Text="CPU 编码速度" Style="{StaticResource FieldLabelStyle}" />
+                            <TextBlock Text="CPU 编码速度档" Style="{StaticResource FieldLabelStyle}" />
                             <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.Presets}"
                                       SelectedItem="{x:Bind ViewModel.Preset, Mode=TwoWay}">
                                 <ComboBox.ItemTemplate>
@@ -239,7 +239,7 @@
                 <!-- 画面与声音 -->
                 <Border Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="10">
-                        <TextBlock Text="画面与声音" Style="{StaticResource SectionTitleStyle}" />
+                        <TextBlock Text="画面与音频" Style="{StaticResource SectionTitleStyle}" />
 
                         <StackPanel Spacing="4">
                             <TextBlock Text="分辨率" Style="{StaticResource FieldLabelStyle}" />
@@ -254,7 +254,7 @@
                             <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.LongEdges}"
                                       SelectedItem="{x:Bind ViewModel.LongEdge, Mode=TwoWay}" />
                             <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
-                                       Text="只缩小不放大：源片比目标更小时保持原样。" />
+                                       Text="仅缩小不放大：源文件小于目标尺寸时保持原样。" />
                         </StackPanel>
 
                         <StackPanel Spacing="4"
@@ -263,7 +263,7 @@
                             <NumberBox Minimum="2" Maximum="8" SmallChange="1" SpinButtonPlacementMode="Compact"
                                        Value="{x:Bind ViewModel.ScaleFactor, Mode=TwoWay}" />
                             <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
-                                       Text="2 表示长宽各减半（4K → 1080p）。" />
+                                       Text="数值 2 表示长宽各减半（如 4K → 1080p）。" />
                         </StackPanel>
 
                         <StackPanel Spacing="4">
@@ -271,7 +271,7 @@
                             <ComboBox HorizontalAlignment="Stretch" ItemsSource="{x:Bind ViewModel.FrameRates}"
                                       SelectedItem="{x:Bind ViewModel.SelectedFrameRate, Mode=TwoWay}" />
                             <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
-                                       Text="只降不升：源片帧率更低时保持原样，升帧只会让文件变大。" />
+                                       Text="仅降低不提高：源文件帧率更低时保持原样，提高帧率只会增大文件体积。" />
                         </StackPanel>
 
                         <CheckBox Content="重新编码音频" IsChecked="{x:Bind ViewModel.ReencodeAudio, Mode=TwoWay}" />
@@ -283,7 +283,7 @@
                                        Value="{x:Bind ViewModel.AudioBitrate, Mode=TwoWay}" />
                         </StackPanel>
                         <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
-                                   Text="关掉「重新编码音频」会原样复制音轨，音质完全不变且更快。注意 MP4 装不下某些音轨格式（程序会提前拦下并提示）。" />
+                                   Text="关闭「重新编码音频」将原样复制音轨，音质不变且速度更快。请注意 MP4 容器不支持部分音轨格式（程序会提前拦截并提示）。" />
                     </StackPanel>
                 </Border>
 
@@ -335,11 +335,12 @@
                                        ToolTipService.ToolTip="{x:Bind ViewModel.OutputPath, Mode=OneWay}" />
                         </StackPanel>
 
-                        <CheckBox Content="目标已存在时覆盖" IsChecked="{x:Bind ViewModel.Overwrite, Mode=TwoWay}" />
-                        <CheckBox Content="做完后检查（时长、能否解码）"
+                        <TextBlock Style="{StaticResource CaptionStyle}" TextWrapping="Wrap"
+                                   Text="目标位置存在同名文件时不覆盖，程序将自动改用「名称 (1)」等未被占用的文件名，并在结果中注明实际写入的文件名。" />
+                        <CheckBox Content="完成后校验（时长、是否可解码）"
                                   IsChecked="{x:Bind ViewModel.VerifyOutput, Mode=TwoWay}"
-                                  ToolTipService.ToolTip="校验不通过时不会留下半成品文件" />
-                        <CheckBox Content="保留源字幕轨" IsChecked="{x:Bind ViewModel.KeepSubtitles, Mode=TwoWay}" />
+                                  ToolTipService.ToolTip="校验未通过时不会留下不完整的文件" />
+                        <CheckBox Content="保留原始字幕轨" IsChecked="{x:Bind ViewModel.KeepSubtitles, Mode=TwoWay}" />
                     </StackPanel>
                 </Border>
             </StackPanel>

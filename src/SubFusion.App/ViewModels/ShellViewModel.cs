@@ -76,7 +76,7 @@ public sealed partial class ShellViewModel : ObservableObject
     #region 状态栏
 
     [ObservableProperty] private string statusText = "就绪";
-    [ObservableProperty] private string taskSummary = "没有任务";
+    [ObservableProperty] private string taskSummary = "暂无任务";
     [ObservableProperty] private string toolText = "正在检测 ffmpeg…";
     [ObservableProperty] private bool toolReady;
 
@@ -87,7 +87,7 @@ public sealed partial class ShellViewModel : ObservableObject
     private void RefreshStatusBar()
     {
         TaskSummary = _tasks.TotalCount == 0
-            ? "没有任务"
+            ? "暂无任务"
             : $"运行 {_tasks.RunningCount} · 完成 {_tasks.CompletedCount} · 失败 {_tasks.FailedCount}";
     }
 
@@ -206,7 +206,7 @@ public sealed partial class ShellViewModel : ObservableObject
 
         if (string.IsNullOrEmpty(ffmpeg))
         {
-            ToolText = "ffmpeg 未找到";
+            ToolText = "未找到 ffmpeg";
             ToolReady = false;
             StatusText = "未找到 ffmpeg：请在「设置 → 媒体工具」中指定路径";
             Subtitle.ApplyToolStatus("未找到 ffmpeg", false);
@@ -241,7 +241,7 @@ public sealed partial class ShellViewModel : ObservableObject
         if (!capabilities.Libass) missing.Add("libass（硬字幕）");
         if (!capabilities.X264) missing.Add("libx264（重新编码）");
         string capabilityText = missing.Count == 0
-            ? "ffmpeg 具备 libass 与 libx264，软字幕与硬字幕都可正常处理。"
+            ? "ffmpeg 已具备 libass 与 libx264，软字幕与硬字幕均可正常处理。"
             : "当前 ffmpeg 缺少：" + string.Join("、", missing);
         Settings.ApplyToolStatus(string.IsNullOrEmpty(ffprobe) ? "找到 ffmpeg，但未找到 ffprobe"
                                                                 : "ffmpeg 与 ffprobe 均已找到",

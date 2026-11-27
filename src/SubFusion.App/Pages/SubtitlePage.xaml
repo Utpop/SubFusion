@@ -33,7 +33,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Spacing="2">
                     <TextBlock Text="字幕合并" Style="{StaticResource PageTitleStyle}" />
-                    <TextBlock Text="把外挂字幕合进视频。先加视频，字幕会自动配上，不满意可以手动改。"
+                    <TextBlock Text="将外挂字幕合并进视频。先添加视频，字幕将自动匹配；如需调整，可手动修改。"
                                Style="{StaticResource PageSubtitleStyle}" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
@@ -179,9 +179,9 @@
                             Visibility="{x:Bind ViewModel.ShowEmptyState, Mode=OneWay, Converter={StaticResource BoolToVisible}}">
                     <FontIcon Glyph="&#xE8B7;" FontSize="40"
                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                    <TextBlock Text="还没有添加视频" Style="{StaticResource EmptyStateTitleStyle}" />
+                    <TextBlock Text="尚未添加视频" Style="{StaticResource EmptyStateTitleStyle}" />
                     <TextBlock Style="{StaticResource EmptyStateBodyStyle}"
-                               Text="把视频、字幕或文件夹拖到窗口里，或使用上方「添加视频 / 添加字幕 / 添加文件夹」。匹配到的字幕会自动挂载到对应视频。" />
+                               Text="将视频、字幕或文件夹拖放至窗口，或使用上方「添加视频 / 添加字幕 / 添加文件夹」。匹配到的字幕将自动挂载到对应视频。" />
                 </StackPanel>
 
                 <!-- 运行日志（可折叠） -->
@@ -257,7 +257,7 @@
                                         </ComboBox>
                             </StackPanel>
                             <StackPanel Grid.Row="0" Grid.Column="1" Spacing="4">
-                                <TextBlock Text="字幕怎么放" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="字幕呈现方式" Style="{StaticResource FieldLabelStyle}" />
                                 <ComboBox HorizontalAlignment="Stretch"
                                           ItemsSource="{x:Bind ViewModel.Modes}"
                                           SelectedItem="{x:Bind ViewModel.Mode, Mode=TwoWay}">
@@ -286,31 +286,31 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <CheckBox Content="加文件时自动记住文件所在目录" IsChecked="{x:Bind ViewModel.SyncOutputDir, Mode=TwoWay}"
-                                              ToolTipService.ToolTip="开启后，添加不同目录的文件时自动把输出目录同步到源目录" />
-                                    <Button Grid.Column="1" Content="用源目录" Style="{StaticResource ToolbarButtonStyle}"
+                                    <CheckBox Content="添加文件时自动记住文件所在目录" IsChecked="{x:Bind ViewModel.SyncOutputDir, Mode=TwoWay}"
+                                              ToolTipService.ToolTip="启用后，添加其他目录的文件时将自动把输出目录同步至源目录" />
+                                    <Button Grid.Column="1" Content="使用源目录" Style="{StaticResource ToolbarButtonStyle}"
                                             Command="{x:Bind ViewModel.UseSourceDirCommand}" />
                                 </Grid>
                             </StackPanel>
 
                             <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Spacing="4">
-                                <TextBlock Text="文件名末尾加" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="文件名后缀" Style="{StaticResource FieldLabelStyle}" />
                                 <TextBox Text="{x:Bind ViewModel.Suffix, Mode=TwoWay}"
-                                         PlaceholderText="例如 _sub（留空则默认）" />
+                                         PlaceholderText="例如 _sub（留空则使用默认值）" />
                             </StackPanel>
 
                             <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Spacing="2">
-                                <CheckBox Content="保留视频里本来就有的字幕" IsChecked="{x:Bind ViewModel.KeepExistingSubs, Mode=TwoWay}" />
+                                <CheckBox Content="保留视频中原有的字幕" IsChecked="{x:Bind ViewModel.KeepExistingSubs, Mode=TwoWay}" />
                                 <CheckBox Content="保留文件的标题、作者等信息" IsChecked="{x:Bind ViewModel.KeepMetadata, Mode=TwoWay}" />
-                                <CheckBox Content="名字一样时直接覆盖，不再询问" IsChecked="{x:Bind ViewModel.Overwrite, Mode=TwoWay}" />
-                                <CheckBox Content="做完后检查文件有没有坏" IsChecked="{x:Bind ViewModel.Verify, Mode=TwoWay}" />
+                                <CheckBox Content="同名时直接覆盖，不再询问" IsChecked="{x:Bind ViewModel.Overwrite, Mode=TwoWay}" />
+                                <CheckBox Content="完成后校验文件完整性" IsChecked="{x:Bind ViewModel.Verify, Mode=TwoWay}" />
                             </StackPanel>
 
                             <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Spacing="6">
-                                <CheckBox Content="完成后直接用新文件替换原视频（会删原文件）" IsChecked="{x:Bind ViewModel.ReplaceSource, Mode=TwoWay}" />
+                                <CheckBox Content="完成后用新文件替换原视频（将删除原文件）" IsChecked="{x:Bind ViewModel.ReplaceSource, Mode=TwoWay}" />
                                 <InfoBar Severity="Warning" IsClosable="False" IsOpen="{x:Bind ViewModel.ReplaceSource, Mode=OneWay}"
-                                         Title="会删除原始文件"
-                                         Message="仅在合并完成且校验通过时删除原视频与已合并字幕；校验失败则保留原件。" />
+                                         Title="将删除原始文件"
+                                         Message="仅在合并完成且校验通过后删除原视频与已合并字幕；校验失败时保留原始文件。" />
                             </StackPanel>
                         </Grid>
                     </StackPanel>
@@ -356,7 +356,7 @@
                             </StackPanel>
 
                             <StackPanel Grid.Row="1" Grid.Column="0" Spacing="4">
-                                <TextBlock Text="画质（数字越小越清晰、文件越大）" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="画质（数值越小越清晰，文件体积越大）" Style="{StaticResource FieldLabelStyle}" />
                                 <NumberBox Minimum="0" Maximum="51" SmallChange="1" SpinButtonPlacementMode="Compact"
                                            Value="{x:Bind ViewModel.Crf, Mode=TwoWay}" />
                             </StackPanel>
@@ -373,13 +373,13 @@
                             </StackPanel>
 
                             <StackPanel Grid.Row="2" Grid.Column="0" Spacing="4">
-                                <TextBlock Text="同时处理几个" Style="{StaticResource FieldLabelStyle}" />
+                                <TextBlock Text="并发处理数" Style="{StaticResource FieldLabelStyle}" />
                                 <NumberBox Minimum="1" Maximum="4" SmallChange="1" SpinButtonPlacementMode="Compact"
                                            Value="{x:Bind ViewModel.Workers, Mode=TwoWay}" />
                             </StackPanel>
 
                             <TextBlock Grid.Row="3" Grid.ColumnSpan="2" Style="{StaticResource CaptionStyle}"
-                                       Text="画质和速度只在需要重新编码时才有作用；做硬字幕一定会重新编码。" />
+                                       Text="画质与速度仅在需要重新编码时生效；烧录硬字幕一定会重新编码。" />
                         </Grid>
                     </StackPanel>
                 </Border>
@@ -388,9 +388,9 @@
                 <Border Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="10">
                         <TextBlock Text="字幕设置" Style="{StaticResource SectionTitleStyle}" />
-                        <CheckBox Content="自动修正字幕乱码（转成通用编码）" IsChecked="{x:Bind ViewModel.ConvertEncoding, Mode=TwoWay}" />
-                        <CheckBox Content="连子文件夹里的文件一起找" IsChecked="{x:Bind ViewModel.Recursive, Mode=TwoWay}" />
-                        <CheckBox Content="硬字幕时把每条字幕都烧进去" IsChecked="{x:Bind ViewModel.HardMulti, Mode=TwoWay}" />
+                        <CheckBox Content="自动修正字幕乱码（转为通用编码）" IsChecked="{x:Bind ViewModel.ConvertEncoding, Mode=TwoWay}" />
+                        <CheckBox Content="包含子文件夹中的文件" IsChecked="{x:Bind ViewModel.Recursive, Mode=TwoWay}" />
+                        <CheckBox Content="烧录硬字幕时包含全部字幕轨" IsChecked="{x:Bind ViewModel.HardMulti, Mode=TwoWay}" />
                         <StackPanel Spacing="4">
                             <TextBlock Text="字幕匹配严格度" Style="{StaticResource FieldLabelStyle}" />
                             <NumberBox Minimum="0.4" Maximum="1.0" SmallChange="0.02" SpinButtonPlacementMode="Compact"

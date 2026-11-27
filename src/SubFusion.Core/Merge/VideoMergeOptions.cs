@@ -86,8 +86,11 @@ public sealed class VideoMergeOptions
     /// <summary>自定义章节标题，按合并顺序一一对应；不足时用文件名补齐。</summary>
     public List<string> ChapterTitles { get; set; } = new();
 
-    /// <summary>目标已存在时是否覆盖；false 时任务直接失败，不覆盖任何数据。</summary>
-    public bool Overwrite { get; set; } = true;
+    /// <summary>
+    /// 目标已存在时不再询问、也不再覆盖：引擎会自动改用「名称 (1).mkv」这类未被占用的名字，
+    /// 并在结果提示里说明实际写入的文件名。覆盖是不可逆的，避让只是多一个文件。
+    /// </summary>
+    public bool AutoRenameOnConflict => true;
 
     /// <summary>合并完成后校验输出（结构/时长/章节/解码完整性）。</summary>
     public bool VerifyOutput { get; set; } = true;

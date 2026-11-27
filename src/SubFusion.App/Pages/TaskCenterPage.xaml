@@ -28,7 +28,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Spacing="2">
                     <TextBlock Text="任务中心" Style="{StaticResource PageTitleStyle}" />
-                    <TextBlock Text="字幕合并与视频合并任务的统一状态、进度与诊断。状态全部来自 Core 的真实回调。"
+                    <TextBlock Text="统一显示字幕合并与视频合并任务的状态、进度与诊断信息。状态均来自 Core 的实际回调。"
                                Style="{StaticResource PageSubtitleStyle}" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
@@ -52,7 +52,7 @@
                     <AppBarButton Label="全部取消" Command="{x:Bind ViewModel.CancelAllCommand}">
                         <AppBarButton.Icon><FontIcon Glyph="&#xE71A;" /></AppBarButton.Icon>
                     </AppBarButton>
-                    <AppBarButton Label="清除已结束" Command="{x:Bind ViewModel.ClearFinishedCommand}">
+                    <AppBarButton Label="清除已结束任务" Command="{x:Bind ViewModel.ClearFinishedCommand}">
                         <AppBarButton.Icon><FontIcon Glyph="&#xE74D;" /></AppBarButton.Icon>
                     </AppBarButton>
                     <AppBarButton Label="打开输出目录" Command="{x:Bind ViewModel.OpenOutputCommand}">
@@ -231,9 +231,9 @@
                                 Visibility="{x:Bind ViewModel.HasSelection, Mode=OneWay, Converter={StaticResource BoolToVisible}, ConverterParameter=invert}">
                         <FontIcon Glyph="&#xE9D5;" FontSize="36"
                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                        <TextBlock Text="选择一个任务查看详情" Style="{StaticResource EmptyStateTitleStyle}" />
+                        <TextBlock Text="选择一个任务以查看详情" Style="{StaticResource EmptyStateTitleStyle}" />
                         <TextBlock Style="{StaticResource EmptyStateBodyStyle}"
-                                   Text="左侧列表中选中一条任务，这里会显示它的输出位置、完成状态与完整诊断日志。" />
+                                   Text="在左侧列表中选中一条任务，此处将显示其输出位置、完成状态与完整诊断日志。" />
                     </StackPanel>
                 </Grid>
             </Border>

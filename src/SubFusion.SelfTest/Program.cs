@@ -394,6 +394,7 @@ internal static class Program
                 case "convert_encoding": o.ConvertEncoding = p.Value.GetBoolean(); break;
                 case "output_dir": o.OutputDir = p.Value.GetString()!; break;
                 case "suffix": o.Suffix = p.Value.GetString()!; break;
+                // 字幕侧仍保留「覆盖」语义（替换原文件是另一套流程）；视频三模块才改成自动改名。
                 case "overwrite": o.Overwrite = p.Value.GetBoolean(); break;
                 case "workers": o.Workers = p.Value.GetInt32(); break;
                 case "hard_multi": o.HardMulti = p.Value.GetBoolean(); break;
@@ -1410,17 +1411,23 @@ internal static class Program
             // ---- 已存在输出 ----
             string existing = Path.Combine(work, "existing.mkv");
             await File.WriteAllTextAsync(existing, "keep", new UTF8Encoding(false));
-            MergeResult noOverwrite = await task.RunAsync(new VideoMergeOptions
+            // 目标已存在时必须自动改名：既不覆盖（不可逆），也不让任务失败（用户每次都要手改名）。
+            MergeResult renamed = await task.RunAsync(new VideoMergeOptions
             {
                 Inputs = new List<string> { a },
                 OutputPath = existing,
                 Container = "mkv",
-                Overwrite = false,
             });
-            Check("G45 未允许覆盖时拒绝写入已存在文件",
-                  noOverwrite.Status == MergeStatus.Failed && noOverwrite.Error.Contains("已存在"),
-                  noOverwrite.Error);
-            Check("G46 拒绝覆盖时原文件未被修改",
+            Check("G45 目标已存在时任务照常完成", renamed.Ok, renamed.Error);
+            Check("G46 实际写入的是避让后的新文件名",
+                  renamed.Ok &&
+                  !string.Equals(renamed.OutputPath, existing, StringComparison.OrdinalIgnoreCase) &&
+                  Path.GetFileNameWithoutExtension(renamed.OutputPath).EndsWith(" (1)", StringComparison.Ordinal),
+                  renamed.OutputPath);
+            Check("G46b 避让说明写进了结果提示",
+                  renamed.Notices.Any(n => n.Contains("另存为", StringComparison.Ordinal)),
+                  string.Join("；", renamed.Notices));
+            Check("G46c 原文件一个字节都没被改动",
                   (await File.ReadAllTextAsync(existing)) == "keep");
 
             // ---- 分析接口 ----
@@ -1843,7 +1850,6 @@ internal static class Program
                 PartialReencode = false,
                 Preset = "slow",
                 Crf = 18,
-                Overwrite = true,
             }, new Progress<MergeProgress>(p => { lock (samples) samples.Add(p); }));
 
             Check("M1 重编码合并成功", result.Ok, result.Error);
@@ -2011,7 +2017,6 @@ internal static class Program
                 AllowReencode = true,
                 VerifyOutput = true,
                 PartialReencode = true,
-                Overwrite = true,
             });
             Check("J7 部分重编码合并成功", result.Ok, result.Error);
 
@@ -2052,7 +2057,6 @@ internal static class Program
                 AllowReencode = true,
                 VerifyOutput = false,
                 PartialReencode = false,
-                Overwrite = true,
             });
             Check("J13 关闭开关后走全量重编码",
                   full.Ok && full.Diagnostics.Count(l => l.StartsWith("[片段] segment_", StringComparison.Ordinal)) == 3,
@@ -2279,6 +2283,25 @@ internal static class Program
                      InputListCleanup.Remaining(new[] { p1, p2, p3 },
                          new[] { p2, Path.Combine(work, "从未在列表里.mkv") }));
 
+            // ---- 输出文件名避让：目标已存在时不覆盖、也不失败 ----
+            // 覆盖是不可逆的：用户把输出目录设成素材目录、或反复试参数时，一次点错就会
+            // 静默毁掉上一份成品。避让的代价只是多一个文件，两者代价不对等。
+            string taken = Path.Combine(work, "movie.mkv");
+            await File.WriteAllTextAsync(taken, "old", new UTF8Encoding(false));
+            string free = Path.Combine(work, "movie_free.mkv");
+            Equal("S6l 目标不存在时原样使用", free, OutputNaming.Unique(free));
+            Equal("S6m 目标已存在时改用「名称 (1)」",
+                  Path.Combine(work, "movie (1).mkv"), OutputNaming.Unique(taken));
+            await File.WriteAllTextAsync(Path.Combine(work, "movie (1).mkv"), "old1", new UTF8Encoding(false));
+            Equal("S6n 连号已被占用时继续往后找",
+                  Path.Combine(work, "movie (2).mkv"), OutputNaming.Unique(taken));
+            // 没有扩展名、带多个点的名字都要能正确处理，不能把 "a.b" 当成扩展名切错。
+            string dotted = Path.Combine(work, "Show.S01E01.mkv");
+            await File.WriteAllTextAsync(dotted, "x", new UTF8Encoding(false));
+            Equal("S6o 名字里的点不被当成扩展名",
+                  Path.Combine(work, "Show.S01E01 (1).mkv"), OutputNaming.Unique(dotted));
+            Equal("S6p 空路径原样返回", "", OutputNaming.Unique(""));
+
             Check("S7 文件夹名体现处理方式（直接拼接 / 重封装）",
                   plan.Folders[0].FolderName.Contains("直接拼接", StringComparison.Ordinal) &&
                   plan.Folders[1].FolderName.Contains("重封装", StringComparison.Ordinal),
@@ -2447,7 +2470,8 @@ internal static class Program
             Check("S27 合并页提供移动入口且按钮文案说明是移动",
                   mergePage is not null &&
                   mergePage.Contains("ExportGroupFoldersCommand", StringComparison.Ordinal) &&
-                  mergePage.Contains("移动到文件夹", StringComparison.Ordinal));
+                  mergePage.Contains("移动至文件夹", StringComparison.Ordinal) &&
+                  mergePage.Contains("原位置不再保留", StringComparison.Ordinal));
             // 策略卡片不得因为差异条数无限拉长。
             // 差异条数与输入文件数成正比（三十几个文件能列三十几项，每项还带完整文件名），
             // 不限高的话这张卡片会把右栏撑成几千像素，「开始合并」被挤出屏幕，
@@ -3836,12 +3860,15 @@ internal static class Program
 
             string blocked = Path.Combine(work, "exists.mp4");
             File.WriteAllBytes(blocked, new byte[] { 1, 2, 3 });
-            var noOverwrite = swOptions.Clone();
-            noOverwrite.OutputPath = blocked;
-            noOverwrite.Overwrite = false;
-            CompressResult refused = await task.RunAsync(noOverwrite).ConfigureAwait(false);
-            Check("T27 目标存在且未允许覆盖时拒绝执行", !refused.Ok);
-            Check("T28 拒绝执行时没有动用户已有的文件",
+            var conflicts = swOptions.Clone();
+            conflicts.OutputPath = blocked;
+            CompressResult renamedOut = await task.RunAsync(conflicts).ConfigureAwait(false);
+            Check("T27 目标存在时压制照常完成", renamedOut.Ok, renamedOut.Error);
+            Check("T28 自动改用未被占用的文件名",
+                  renamedOut.Ok &&
+                  !string.Equals(renamedOut.OutputPath, blocked, StringComparison.OrdinalIgnoreCase),
+                  renamedOut.OutputPath);
+            Check("T28b 用户已有的文件没有被改动",
                   File.Exists(blocked) && new FileInfo(blocked).Length == 3);
 
             var badInput = swOptions.Clone();

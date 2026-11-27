@@ -205,7 +205,6 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     [ObservableProperty] private bool allowReencode = true;
     [ObservableProperty] private bool autoChapters = true;
     [ObservableProperty] private bool verifyOutput = true;
-    [ObservableProperty] private bool overwrite = true;
 
     /// <summary>
     /// 校验通过后删除源文件（不可逆）。默认关闭。
@@ -530,7 +529,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     {
         if (IsRunning)
         {
-            await _ui.ShowInfoAsync("正在合并中，请先取消当前任务再添加文件。");
+            await _ui.ShowInfoAsync("正在合并，请先取消当前任务后再添加文件。");
             return;
         }
         if (paths.Count == 0) return;
@@ -539,7 +538,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         List<string> videos = collected.Videos;
         if (videos.Count == 0)
         {
-            await _ui.ShowErrorAsync("没有找到可合并的视频文件。");
+            await _ui.ShowErrorAsync("未找到可合并的视频文件。");
             return;
         }
 
@@ -556,7 +555,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
 
         if (added.Count == 0)
         {
-            await _ui.ShowInfoAsync("这些视频已经在列表里了。");
+            await _ui.ShowInfoAsync("这些视频已在列表中。");
             return;
         }
 
@@ -735,14 +734,14 @@ public sealed partial class VideoMergeViewModel : ObservableObject
         if (IsRunning || Grouping || ExportingGroups) return;
         if (_lastGrouping is null)
         {
-            await _ui.ShowInfoAsync("请先点「识别无损组合」，有结果后才能分配文件夹。");
+            await _ui.ShowInfoAsync("请先点击「识别无损组合」，得到结果后方可分配文件夹。");
             return;
         }
         if (Groups.Count == 0)
         {
             // 识别过了，只是这些文件两两都拼不上。此时再让用户「先去识别」是错的提示——
             // 他会反复点识别，得到同一个空结果。
-            await _ui.ShowInfoAsync("当前输入没有可无损拼接的组合，无法按组合分配文件夹。");
+            await _ui.ShowInfoAsync("当前输入中没有可无损拼接的组合，无法按组合分配文件夹。");
             return;
         }
 
@@ -759,7 +758,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
             await GroupByCompatibilityAsync(showDialog: false);
             if (!GroupingMatchesInputs())
             {
-                await _ui.ShowInfoAsync("输入列表已经变化，请重新点「识别无损组合」再导出。");
+                await _ui.ShowInfoAsync("输入列表已发生变化，请重新点击「识别无损组合」后再导出。");
                 return;
             }
         }
@@ -1261,7 +1260,6 @@ public sealed partial class VideoMergeViewModel : ObservableObject
             ChapterTitles = ChaptersEnabled
                 ? Inputs.Select(i => string.IsNullOrWhiteSpace(i.ChapterTitle) ? i.DefaultChapterTitle : i.ChapterTitle.Trim()).ToList()
                 : new List<string>(),
-            Overwrite = Overwrite,
             VerifyOutput = VerifyOutput,
             PartialReencode = PartialReencode,
             AutoFallbackOnFailure = AutoFallbackOnFailure,
@@ -1678,7 +1676,7 @@ public sealed partial class VideoMergeViewModel : ObservableObject
     {
         string dir = OutputPath.Length > 0 ? (Path.GetDirectoryName(OutputPath) ?? "") : OutputDirectory;
         if (dir.Length > 0 && Directory.Exists(dir)) _ui.OpenFolder(dir);
-        else _ui.ShowInfoAsync("输出目录还不存在。");
+        else _ui.ShowInfoAsync("输出目录尚不存在。");
     }
 
     #endregion

@@ -244,9 +244,9 @@ public sealed partial class VideoCompressViewModel : ObservableObject
     public IReadOnlyList<CompressCodecOption> CodecOptions { get; } = new[]
     {
         new CompressCodecOption(VideoCodecKind.H264, "H.264（AVC）",
-            "兼容性最好：手机、电视、网页、几乎所有播放器都能放。同等画质下文件比 H.265 大一些。"),
+            "兼容性最佳：手机、电视、网页及绝大多数播放器均可播放。同等画质下文件体积大于 H.265。"),
         new CompressCodecOption(VideoCodecKind.Hevc, "H.265（HEVC）",
-            "同等画质下文件通常小 30% 左右，代价是编码慢一点、老设备可能放不动。"),
+            "同等画质下文件体积通常减小约 30%，代价是编码速度较慢，较旧的设备可能无法流畅解码。"),
     };
 
     [ObservableProperty] private CompressCodecOption? selectedCodec;
@@ -274,11 +274,11 @@ public sealed partial class VideoCompressViewModel : ObservableObject
     public IReadOnlyList<CompressPreferenceOption> PreferenceOptions { get; } = new[]
     {
         new CompressPreferenceOption("auto", "自动（有显卡就用显卡）",
-            "能用显卡就用显卡，显卡不可用时自动改用 CPU，并在结果里说明原因。"),
+            "优先使用显卡编码；显卡不可用时自动改用 CPU，并在结果中说明原因。"),
         new CompressPreferenceOption("hardware", "只用显卡加速",
-            "强制使用显卡编码。显卡不可用时直接失败，不会静默改用 CPU——适合需要稳定耗时预期的场景。"),
+            "强制使用显卡编码。显卡不可用时直接失败，不会自动改用 CPU，适用于需要稳定耗时预期的场景。"),
         new CompressPreferenceOption("software", "只用 CPU 编码",
-            "画质/体积比最好，但速度取决于 CPU。显卡在跑别的任务时用它更稳。"),
+            "画质与体积比最佳，但速度取决于 CPU。显卡正在执行其他任务时，此选项更稳定。"),
     };
 
     [ObservableProperty] private CompressPreferenceOption? selectedPreference;
@@ -545,7 +545,6 @@ public sealed partial class VideoCompressViewModel : ObservableObject
     [ObservableProperty] private string outputDirectory = "";
     [ObservableProperty] private string outputName = "";
     [ObservableProperty] private string outputPath = "";
-    [ObservableProperty] private bool overwrite = true;
     [ObservableProperty] private bool verifyOutput = true;
     [ObservableProperty] private bool keepSubtitles;
 
@@ -556,7 +555,6 @@ public sealed partial class VideoCompressViewModel : ObservableObject
         SyncOutputExtension();
         StartCommand.NotifyCanExecuteChanged();
     }
-    partial void OnOverwriteChanged(bool value) => StartCommand.NotifyCanExecuteChanged();
     partial void OnVerifyOutputChanged(bool value) => RefreshPlan();
     partial void OnKeepSubtitlesChanged(bool value) => RefreshPlan();
 
@@ -628,7 +626,7 @@ public sealed partial class VideoCompressViewModel : ObservableObject
     {
         string dir = OutputPath.Length > 0 ? (Path.GetDirectoryName(OutputPath) ?? "") : OutputDirectory;
         if (dir.Length > 0 && Directory.Exists(dir)) _ui.OpenFolder(dir);
-        else _ = _ui.ShowInfoAsync("输出目录还不存在。");
+        else _ = _ui.ShowInfoAsync("输出目录尚不存在。");
     }
 
     #endregion
@@ -842,7 +840,6 @@ public sealed partial class VideoCompressViewModel : ObservableObject
                 ? (int)Math.Round(ScaleFactor)
                 : (int)Math.Round(LongEdge),
             Container = Container,
-            Overwrite = Overwrite,
             VerifyOutput = VerifyOutput,
             KeepSubtitles = KeepSubtitles,
             ReencodeAudio = ReencodeAudio,

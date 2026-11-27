@@ -37,7 +37,7 @@
 
         <StackPanel Grid.Row="0" Spacing="4" Margin="0,0,0,10">
             <TextBlock x:Name="VideoLabel" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-            <TextBlock Text="（在左边点选要合并的字幕，选中即加入右侧；可设置语言与默认轨）" FontSize="12"
+            <TextBlock Text="（在左侧点选需要合并的字幕，选中即加入右侧；可设置语言与默认轨道）" FontSize="12"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
         </StackPanel>
 
@@ -126,7 +126,7 @@
                 <TextBlock Grid.Row="0" Grid.Column="2" Text="轨道名：" VerticalAlignment="Center" FontSize="12" />
                 <TextBox Grid.Row="0" Grid.Column="3" x:Name="TitleBox"
                          HorizontalAlignment="Stretch" TextChanged="OnTitleChanged" />
-                <TextBlock Grid.Row="0" Grid.Column="4" Text="（默认轨只会有一个）" FontSize="12"
+                <TextBlock Grid.Row="0" Grid.Column="4" Text="（默认轨道仅可有一条）" FontSize="12"
                            VerticalAlignment="Center"
                            Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
 

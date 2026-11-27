@@ -271,7 +271,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IBatchEvents
     {
         if (IsRunning)
         {
-            await _ui.ShowInfoAsync("正在处理中，请先停止再添加文件。");
+            await _ui.ShowInfoAsync("正在处理，请先停止后再添加文件。");
             return;
         }
         if (paths.Count == 0) return;
@@ -279,7 +279,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IBatchEvents
         CollectResult collected = FileCollector.Collect(paths, Recursive);
         if (collected.Videos.Count == 0 && collected.Subtitles.Count == 0)
         {
-            await _ui.ShowErrorAsync("没有找到视频或字幕文件。请确认拖入的是受支持的格式。");
+            await _ui.ShowErrorAsync("未找到视频或字幕文件，请确认拖入的文件为受支持的格式。");
             return;
         }
 
@@ -299,7 +299,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IBatchEvents
 
         if (newVideos.Count == 0 && newSubs.Count == 0)
         {
-            await _ui.ShowInfoAsync("这些文件已经在列表里了。");
+            await _ui.ShowInfoAsync("这些文件已在列表中。");
             return;
         }
 
@@ -1077,7 +1077,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IBatchEvents
     {
         string folder = OutputDir?.Trim() ?? "";
         if (folder.Length > 0 && Directory.Exists(folder)) _ui.OpenFolder(folder);
-        else _ui.ShowInfoAsync("输出目录还不存在。");
+        else _ui.ShowInfoAsync("输出目录尚不存在。");
     }
 
     [RelayCommand]
@@ -1096,7 +1096,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IBatchEvents
         if (!string.IsNullOrEmpty(job.Output) && File.Exists(job.Output))
             _ui.OpenFolder(Path.GetDirectoryName(job.Output) ?? "");
         else
-            await _ui.ShowInfoAsync("输出文件还不存在。");
+            await _ui.ShowInfoAsync("输出文件尚不存在。");
     }
 
     [RelayCommand]

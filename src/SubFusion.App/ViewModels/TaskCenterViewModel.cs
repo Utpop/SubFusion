@@ -45,7 +45,7 @@ public sealed partial class TaskCenterViewModel : ObservableObject
     [ObservableProperty] private TaskRecord? selected;
     [ObservableProperty] private bool hasSelection;
     [ObservableProperty] private bool showEmptyState = true;
-    [ObservableProperty] private string emptyText = "还没有任务";
+    [ObservableProperty] private string emptyText = "暂无任务";
     [ObservableProperty] private string countText = "";
     [ObservableProperty] private bool hasRunning;
     [ObservableProperty] private int runningCount;
@@ -99,10 +99,10 @@ public sealed partial class TaskCenterViewModel : ObservableObject
         EmptyText = Filter switch
         {
             TaskFilter.Running => "当前没有运行中的任务",
-            TaskFilter.Completed => "还没有完成的任务",
-            TaskFilter.Failed => "没有失败的任务",
-            TaskFilter.Cancelled => "没有已取消的任务",
-            _ => "还没有任务。在「字幕合并」或「视频合并」页开始一个任务后，这里会显示它的实时状态。",
+            TaskFilter.Completed => "暂无已完成的任务",
+            TaskFilter.Failed => "暂无失败的任务",
+            TaskFilter.Cancelled => "暂无已取消的任务",
+            _ => "暂无任务。在「字幕合并」或「视频合并」页启动任务后，此处将显示其实时状态。",
         };
         CountText = $"{Filtered.Count} 条";
         if (Selected is not null && !Filtered.Contains(Selected)) Selected = null;
@@ -166,7 +166,7 @@ public sealed partial class TaskCenterViewModel : ObservableObject
     {
         if (Selected is null || !Selected.CanCancel)
         {
-            _ui.ShowInfoAsync("该任务已经结束，无法取消。");
+            _ui.ShowInfoAsync("该任务已结束，无法取消。");
             return;
         }
         _tasks.Cancel(Selected);
@@ -190,7 +190,7 @@ public sealed partial class TaskCenterViewModel : ObservableObject
         }
         string folder = Directory.Exists(path) ? path : (Path.GetDirectoryName(path) ?? "");
         if (folder.Length > 0 && Directory.Exists(folder)) _ui.OpenFolder(folder);
-        else _ui.ShowInfoAsync("输出目录还不存在。");
+        else _ui.ShowInfoAsync("输出目录尚不存在。");
     }
 
     [RelayCommand]

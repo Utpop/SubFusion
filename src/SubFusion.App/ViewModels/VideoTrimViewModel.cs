@@ -348,9 +348,9 @@ public sealed partial class VideoTrimViewModel : ObservableObject
     public IReadOnlyList<TrimModeOption> Modes { get; } = new[]
     {
         new TrimModeOption(TrimMode.Copy, "无损切割（不重新编码）",
-            "只搬运码流，画质逐比特不变，速度快。切点必须落在关键帧上，可能比请求的起点更早。"),
+            "仅复制码流，画质逐比特不变，速度最快。切点必须落在关键帧上，因此实际起点可能早于请求值。"),
         new TrimModeOption(TrimMode.Precise, "精确切割（重编码所选区间）",
-            "按请求的时间点精确切，只重编码被选中的这一段。画质有轻微损失，速度取决于片段长度。"),
+            "按请求的时间点精确切割，仅重编码选中的片段。画质有轻微损失，耗时取决于片段长度。"),
     };
 
     [ObservableProperty] private TrimMode mode = TrimMode.Copy;
@@ -450,7 +450,6 @@ public sealed partial class VideoTrimViewModel : ObservableObject
     }
 
     [ObservableProperty] private bool verifyOutput = true;
-    [ObservableProperty] private bool overwrite = true;
     [ObservableProperty] private bool keepSubtitles;
 
     partial void OnVerifyOutputChanged(bool value) => RefreshPlan();
@@ -598,7 +597,7 @@ public sealed partial class VideoTrimViewModel : ObservableObject
         if (start >= sourceDuration)
         {
             PlanError = string.Format(CultureInfo.InvariantCulture,
-                "起点超出了文件时长（{0}）", FormatTime(sourceDuration));
+                "起点超出文件时长（{0}）", FormatTime(sourceDuration));
             StartCommand.NotifyCanExecuteChanged();
             return;
         }
@@ -614,14 +613,14 @@ public sealed partial class VideoTrimViewModel : ObservableObject
             snaps = Math.Abs(actualStart - start) > 1e-3;
             if (snaps)
                 snapNote = string.Format(CultureInfo.InvariantCulture,
-                    "起点前移到关键帧 {0}（多带 {1:0.###} 秒画面）",
+                    "起点前移至关键帧 {0}（多包含 {1:0.###} 秒画面）",
                     FormatTime(actualStart), start - actualStart);
         }
 
         double actualDuration = clampedEnd - actualStart;
         if (actualDuration < 0.05)
         {
-            PlanError = "吸附到关键帧后剩余时长不足 0.05 秒，请把起点提前或终点延后";
+            PlanError = "对齐至关键帧后剩余时长不足 0.05 秒，请将起点提前或终点延后";
             StartCommand.NotifyCanExecuteChanged();
             return;
         }
@@ -787,7 +786,6 @@ public sealed partial class VideoTrimViewModel : ObservableObject
             Mode = Mode,
             Rotation = Rotation,
             Container = Container,
-            Overwrite = Overwrite,
             VerifyOutput = VerifyOutput,
             KeepSubtitles = KeepSubtitles,
             VideoCodec = Codec,
@@ -1057,7 +1055,7 @@ public sealed partial class VideoTrimViewModel : ObservableObject
     {
         string dir = OutputPath.Length > 0 ? (Path.GetDirectoryName(OutputPath) ?? "") : OutputDirectory;
         if (dir.Length > 0 && Directory.Exists(dir)) _ui.OpenFolder(dir);
-        else _ui.ShowInfoAsync("输出目录还不存在。");
+        else _ui.ShowInfoAsync("输出目录尚不存在。");
     }
 
     #endregion
